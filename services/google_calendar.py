@@ -1,0 +1,285 @@
+from __future__ import annotations
+
+import logging
+import os.path
+import pickle
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from zoneinfo import ZoneInfo
+
+from core.config import Settings
+
+logger = logging.getLogger(__name__)
+
+SCOPES = [
+    'https://www.googleapis.com/auth/calendar',
+    'https://www.googleapis.com/auth/gmail.readonly'
+]
+
+
+class GoogleCalendarService:
+    """Service for interacting with Google Calendar API."""
+
+    def __init__(self):
+        self._credentials = None
+        self._calendar_service = None
+
+    def _get_credentials(self, settings: Settings) -> Credentials:
+        """Get or refresh Google OAuth credentials."""
+        if self._credentials and self._credentials.valid:
+            return self._credentials
+
+        token_dir = Path(settings.google_token_dir).expanduser()
+        token_dir.mkdir(parents=True, exist_ok=True)
+        token_file = token_dir / 'token.pickle'
+
+        creds = None
+        # Token file stores the user's access and refresh tokens
+        if token_file.exists():
+            with open(token_file, 'rb') as token:
+                creds = pickle.load(token)
+
+        # If there are no valid credentials, let the user log in
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    settings.google_client_secrets, SCOPES
+                )
+                creds = flow.run_local_server(port=0)
+
+            # Save the credentials for the next run
+            with open(token_file, 'wb') as token:
+                pickle.dump(creds, token)
+
+        self._credentials = creds
+        return creds
+
+    def _get_calendar_service(self, settings: Settings):
+        """Get Google Calendar API service."""
+        if not self._calendar_service:
+            creds = self._get_credentials(settings)
+            self._calendar_service = build('calendar', 'v3', credentials=creds)
+        return self._calendar_service
+
+    async def list_events(
+        self,
+        settings: Settings,
+        time_min: datetime | None = None,
+        time_max: datetime | None = None,
+        max_results: int = 100
+    ) -> list[dict]:
+        """Fetch events from Google Calendar."""
+        service = self._get_calendar_service(settings)
+
+        # Default to events from now onwards
+        if not time_min:
+            time_min = datetime.utcnow()
+        if not time_max:
+            time_max = time_min + timedelta(days=90)
+
+        # Format datetime for Google Calendar API
+        # If timezone-aware, use RFC3339 format; if naive, treat as UTC and add 'Z'
+        if time_min.tzinfo is not None:
+            time_min_str = time_min.isoformat()
+        else:
+            time_min_str = time_min.isoformat() + 'Z'
+
+        if time_max.tzinfo is not None:
+            time_max_str = time_max.isoformat()
+        else:
+            time_max_str = time_max.isoformat() + 'Z'
+
+        events_result = service.events().list(
+            calendarId=settings.google_calendar_id,
+            timeMin=time_min_str,
+            timeMax=time_max_str,
+            maxResults=max_results,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+
+        events = events_result.get('items', [])
+
+        # Format events for frontend
+        formatted_events = []
+        for event in events:
+            start = event['start'].get('dateTime', event['start'].get('date'))
+            end = event['end'].get('dateTime', event['end'].get('date'))
+
+            formatted_events.append({
+                'id': event['id'],
+                'title': event.get('summary', 'No Title'),
+                'date': start.split('T')[0] if 'T' in start else start,
+                'time': start.split('T')[1][:5] if 'T' in start else None,
+                'location': event.get('location'),
+                'description': event.get('description'),
+                'start': start,
+                'end': end
+            })
+
+        return formatted_events
+
+    def _build_event_body(
+        self,
+        *,
+        settings: Settings,
+        summary: str,
+        start_time: datetime,
+        end_time: datetime,
+        description: str | None = None,
+        location: str | None = None,
+        all_day: bool = False,
+        attendees: list[dict] | None = None,
+    ) -> dict:
+        start = self._normalize_datetime(start_time, settings.timezone)
+        end = self._normalize_datetime(end_time, settings.timezone)
+
+        event: dict = {
+            'summary': summary,
+        }
+
+        if all_day:
+            event['start'] = {'date': self._datetime_to_date_str(start)}
+            event['end'] = {'date': self._datetime_to_date_str(end)}
+        else:
+            event['start'] = {
+                'dateTime': start.isoformat(),
+                'timeZone': settings.timezone,
+            }
+            event['end'] = {
+                'dateTime': end.isoformat(),
+                'timeZone': settings.timezone,
+            }
+
+        if description:
+            event['description'] = description
+        if location:
+            event['location'] = location
+        if attendees:
+            event['attendees'] = attendees
+
+        return event
+
+    @staticmethod
+    def _normalize_datetime(dt: datetime, timezone_name: str) -> datetime:
+        tz = ZoneInfo(timezone_name)
+
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=tz)
+
+        return dt.astimezone(tz)
+
+    @staticmethod
+    def _datetime_to_date_str(dt: datetime) -> str:
+        return dt.date().isoformat()
+
+    async def create_event(
+        self,
+        settings: Settings,
+        summary: str,
+        start_time: datetime,
+        end_time: datetime,
+        description: str | None = None,
+        location: str | None = None,
+        *,
+        all_day: bool = False,
+        attendees: list[dict] | None = None,
+        event_id: str | None = None,
+    ) -> dict:
+        """Create a new event in Google Calendar."""
+        service = self._get_calendar_service(settings)
+        event = self._build_event_body(
+            settings=settings,
+            summary=summary,
+            start_time=start_time,
+            end_time=end_time,
+            description=description,
+            location=location,
+            all_day=all_day,
+            attendees=attendees,
+        )
+
+        if event_id:
+            event['id'] = event_id
+
+        created_event = service.events().insert(
+            calendarId=settings.google_calendar_id,
+            body=event,
+        ).execute()
+
+        return created_event
+
+    async def create_or_update_event(
+        self,
+        settings: Settings,
+        summary: str,
+        start_time: datetime,
+        end_time: datetime,
+        description: str | None = None,
+        location: str | None = None,
+        *,
+        all_day: bool = False,
+        attendees: list[dict] | None = None,
+        event_id: str | None = None,
+    ) -> dict:
+        """Create a calendar event or update an existing one when IDs collide."""
+        service = self._get_calendar_service(settings)
+        event_body = self._build_event_body(
+            settings=settings,
+            summary=summary,
+            start_time=start_time,
+            end_time=end_time,
+            description=description,
+            location=location,
+            all_day=all_day,
+            attendees=attendees,
+        )
+
+        if event_id:
+            event_body['id'] = event_id
+            # Check if event already exists before trying to insert
+            try:
+                existing = service.events().get(
+                    calendarId=settings.google_calendar_id,
+                    eventId=event_id,
+                ).execute()
+                # Event exists, update it
+                logger.info(f"Event {event_id} already exists, updating instead of creating")
+                event = service.events().update(
+                    calendarId=settings.google_calendar_id,
+                    eventId=event_id,
+                    body=event_body,
+                ).execute()
+                return {"action": "updated", "event": event}
+            except HttpError as get_exc:
+                if get_exc.resp.status == 404:
+                    # Event doesn't exist, proceed with insert
+                    pass
+                else:
+                    raise
+
+        try:
+            event = service.events().insert(
+                calendarId=settings.google_calendar_id,
+                body=event_body,
+            ).execute()
+            logger.info(f"Created new event: {event.get('id')} - {summary}")
+            return {"action": "created", "event": event}
+        except HttpError as exc:
+            if exc.resp.status == 409 and event_id:
+                logger.warning(f"Event {event_id} conflict on insert, updating instead")
+                event = service.events().update(
+                    calendarId=settings.google_calendar_id,
+                    eventId=event_id,
+                    body=event_body,
+                ).execute()
+                return {"action": "updated", "event": event}
+            raise

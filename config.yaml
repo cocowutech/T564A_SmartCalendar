@@ -1,0 +1,31 @@
+canvas_sources:
+  - name: "Harvard Canvas"
+    url: "https://canvas.harvard.edu/feeds/calendars/user_OtFYRvlM3UBCrdIXqkntOJerw5Jibi5UZ5IGhyYV.ics"
+  - name: "MIT Canvas"
+    url: "REPLACE_WITH_YOUR_MIT_CANVAS_ICS_URL"
+  # Add more Canvas calendars here:
+  - name: "MIT Canvas"
+    url: "https://canvas.mit.edu/feeds/calendars/user_Pt8P7SgOM54JioJ1QXYhjylaq9Jx33VJvUZwx8iA.ics"
+
+ics_sources:
+  - name: "iLab"
+    url: "https://example.com/ilab.ics"
+  - name: "Eventbrite"
+    url: "https://example.com/eventbrite.ics"
+gmail:
+  search_query: "has:attachment (filename:ics OR filename:ical) OR subject:(ticket OR reservation OR rsvp OR itinerary OR booking) newer_than:120d"
+selfcare:
+  preferred_windows:
+    - day: "Mon-Fri"
+      start: "07:00"
+      end: "10:30"
+      min_minutes: 60
+    - day: "Mon-Fri"
+      start: "16:30"
+      end: "20:30"
+      min_minutes: 60
+  target_minutes: [120, 60]
+  buffers_minutes: 10
+  max_per_day: 1
+home:
+  address: "Cambridge, MA"

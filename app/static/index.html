@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Calendar Agent</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <div class="app-shell">
+        <header class="app-header">
+            <div class="header-left">
+                <h1 class="app-title">Smart Calendar</h1>
+                <span class="term-label">Fall 2025</span>
+            </div>
+            <div class="header-actions">
+                <div class="view-toggle">
+                    <button class="toggle-btn active" disabled>Week</button>
+                    <button class="toggle-btn" disabled>Month</button>
+                </div>
+                <button class="btn btn-secondary" onclick="loadRealEvents()">
+                    <span class="icon">🔄</span> Refresh
+                </button>
+                <button class="btn btn-primary" onclick="addRecurringEvent()">
+                    <span class="icon">➕</span> Add Activity
+                </button>
+            </div>
+        </header>
+
+        <div class="app-body">
+            <aside class="control-panel">
+                <section class="panel-card">
+                    <h2>Course Filters</h2>
+                    <div class="filter-actions">
+                        <button class="btn-text" onclick="selectAllCourses(true)">All</button>
+                        <button class="btn-text" onclick="selectAllCourses(false)">None</button>
+                    </div>
+                    <div class="filter-list" id="courseFilterList">
+                        <!-- Dynamically populated with course checkboxes -->
+                    </div>
+                </section>
+
+                <section class="panel-card">
+                    <h2>Add Smart Activity</h2>
+                    <p class="hint">Create structured recurring plans with natural language or form input.</p>
+                    <div class="panel-field">
+                        <label for="voiceInput">Describe your activity</label>
+                        <div class="voice-inline">
+                            <textarea id="voiceInput" placeholder="I want a 2 hour study session every Wednesday evening."></textarea>
+                            <button id="micButton" class="mic-button" onclick="toggleVoiceRecognition()" title="Speak command">
+                                <span id="micIcon">🎤</span>
+                            </button>
+                        </div>
+                        <div id="voiceStatus" class="voice-status"></div>
+                    </div>
+                    <div class="voice-actions">
+                        <button class="btn btn-primary btn-block" onclick="addRecurringEvent()">Generate Suggestions</button>
+                    </div>
+                    <div id="voiceResult" class="result"></div>
+                </section>
+
+                <section class="panel-card">
+                    <h2>Sync Sources</h2>
+                    <button class="btn btn-success btn-block" onclick="syncAll()">
+                        <span class="icon">🔄</span> Sync All Sources
+                    </button>
+                    <div class="sync-grid">
+                        <button class="btn btn-light" onclick="refreshGoogleCalendar(event)">Google Calendar</button>
+                        <button class="btn btn-light" onclick="ingestCanvas(event)">Canvas</button>
+                        <button class="btn btn-light" onclick="ingestGmail(event)">Gmail</button>
+                        <button class="btn btn-light" onclick="ingestIcs(event)">Other ICS</button>
+                    </div>
+                    <div class="auto-sync-panel">
+                        <label class="toggle-label">
+                            <input type="checkbox" id="autoSyncToggle" onchange="toggleAutoSync()">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-text">Auto-sync</span>
+                        </label>
+                        <select id="syncInterval" class="sync-interval" onchange="updateSyncInterval()" disabled>
+                            <option value="5">Every 5 min</option>
+                            <option value="15" selected>Every 15 min</option>
+                            <option value="30">Every 30 min</option>
+                            <option value="60">Every hour</option>
+                        </select>
+                        <div id="nextSync" class="next-sync">Auto-sync disabled</div>
+                    </div>
+                    <div id="ingestResult" class="result toast"></div>
+                </section>
+
+                <section class="panel-card status-card">
+                    <h2>System Status</h2>
+                    <ul class="status-list">
+                        <li><span>API</span><span id="apiStatus">Checking…</span></li>
+                        <li><span>Last Sync</span><span id="lastSync">Never</span></li>
+                        <li><span>Auto-sync</span><span id="autoSyncStatus">⚫ Off</span></li>
+                        <li><span>Voice</span><span id="voiceSupport">Checking...</span></li>
+                    </ul>
+                </section>
+            </aside>
+
+            <main class="calendar-section">
+                <div class="week-header">
+                    <div class="week-nav">
+                        <button class="nav-btn" onclick="changeWeek(-1)">‹</button>
+                        <div class="week-range">
+                            <h2 id="weekRange"></h2>
+                            <span id="weekSubheading"></span>
+                        </div>
+                        <button class="nav-btn" onclick="changeWeek(1)">›</button>
+                    </div>
+                    <div class="week-meta">
+                        <!-- Hidden per requirements -->
+                    </div>
+                </div>
+
+                <!-- Week Grid with 30-min intervals (NOW ON TOP) -->
+                <div class="weekly-calendar">
+                    <div class="time-column" id="timeColumn"></div>
+                    <div class="week-grid" id="weekGrid"></div>
+                </div>
+
+                <!-- All-Day Events Section (NOW ON BOTTOM with day filters) -->
+                <div class="all-day-banner" id="allDayBanner" style="display: none;">
+                    <div class="all-day-header">
+                        <h3>No-Time Events</h3>
+                        <div class="day-filter-dots" id="dayFilterDots">
+                            <button class="day-dot active" data-day="0" onclick="filterAllDayByDay(0)" title="Monday">M</button>
+                            <button class="day-dot active" data-day="1" onclick="filterAllDayByDay(1)" title="Tuesday">T</button>
+                            <button class="day-dot active" data-day="2" onclick="filterAllDayByDay(2)" title="Wednesday">W</button>
+                            <button class="day-dot active" data-day="3" onclick="filterAllDayByDay(3)" title="Thursday">T</button>
+                            <button class="day-dot active" data-day="4" onclick="filterAllDayByDay(4)" title="Friday">F</button>
+                            <button class="day-dot active" data-day="5" onclick="filterAllDayByDay(5)" title="Saturday">S</button>
+                            <button class="day-dot active" data-day="6" onclick="filterAllDayByDay(6)" title="Sunday">S</button>
+                        </div>
+                    </div>
+                    <div class="all-day-events" id="allDayEvents"></div>
+                </div>
+            </main>
+
+            <aside class="insights-panel">
+                <section class="panel-card schedule-card">
+                    <h2 id="selectedDayTitle">Schedule for Today</h2>
+                    <div id="selectedDayEvents" class="event-list"></div>
+                </section>
+
+                <section class="panel-card upcoming-card">
+                    <h2>Upcoming</h2>
+                    <div id="upcomingEvents" class="event-list"></div>
+                </section>
+
+                <!-- Hidden per requirements -->
+                <!-- <section class="panel-card allday-card">
+                    <h2>All-Day & Tasks</h2>
+                    <div id="rightPanelAllDay" class="event-list"></div>
+                </section> -->
+            </aside>
+        </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
