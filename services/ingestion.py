@@ -69,7 +69,13 @@ class IcsIngestionService:
         self.calendar_service = GoogleCalendarService()
 
     async def ingest_canvas(self, payload: dict, *, settings: Settings) -> dict:
-        """Ingest Canvas ICS feeds (all configured sources) into Google Calendar."""
+        """
+        Fetch Canvas ICS feeds but do NOT sync to Google Calendar.
+        
+        Canvas events are kept separate and merged with Google Calendar events
+        in the frontend only. This prevents Canvas events from cluttering
+        Google Calendar while still allowing them to be displayed in the UI.
+        """
         _ = payload
         app_config = settings.load_app_config()
 
@@ -77,32 +83,98 @@ class IcsIngestionService:
         if not canvas_sources:
             return {"handled": False, "reason": "No Canvas ICS URLs configured"}
 
-        # Ingest all Canvas sources
-        total_created = 0
-        total_skipped = 0
+        # Just verify Canvas sources are accessible, don't sync to Google Calendar
+        total_events = 0
         errors = []
 
         for source in canvas_sources:
             try:
-                # Use "Canvas" as source_name for consistent event IDs across all Canvas sources
-                # This ensures idempotent syncing - same event = same ID regardless of which Canvas source
-                result = await self._ingest_ics_url(
+                result = await self._fetch_canvas_events(
                     url=str(source.url),
-                    source_name="Canvas",  # Fixed: always "Canvas" for consistent event IDs
-                    settings=settings,
+                    source_name=source.name,
                 )
                 if result.get("handled"):
-                    total_created += result.get("created", 0)
-                    total_skipped += result.get("skipped", 0)
+                    total_events += result.get("events_count", 0)
             except Exception as e:
                 errors.append(f"{source.name}: {str(e)}")
 
         return {
             "handled": True,
-            "created": total_created,
-            "skipped": total_skipped,
+            "events_count": total_events,
             "sources_processed": len(canvas_sources),
             "errors": errors if errors else None,
+            "note": "Canvas events are NOT synced to Google Calendar - they are displayed in UI only"
+        }
+    
+    async def fetch_canvas_events_for_display(self, *, settings: Settings) -> list[dict]:
+        """
+        Fetch Canvas events directly from ICS feeds for display in the UI.
+        These events are NOT stored in Google Calendar.
+        """
+        app_config = settings.load_app_config()
+        canvas_sources = app_config.get_all_canvas_sources()
+        
+        all_events = []
+        timezone = self._get_timezone(settings.timezone)
+        
+        for source in canvas_sources:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(str(source.url))
+                    response.raise_for_status()
+                
+                calendar = Calendar.from_ical(response.content)
+                
+                for component in calendar.walk():
+                    if component.name != "VEVENT":
+                        continue
+                    
+                    try:
+                        payload = self._build_event_payload(component, timezone)
+                        
+                        # Format event for frontend (similar to Google Calendar format)
+                        event = {
+                            'id': f"canvas-{source.name.lower().replace(' ', '-')}-{payload['uid']}",
+                            'title': payload['summary'],
+                            'source': source.name,  # "Harvard Canvas", "MIT Canvas", etc.
+                            'description': payload.get('description'),
+                            'location': payload.get('location'),
+                            'start': payload['start'].isoformat(),
+                            'end': payload['end'].isoformat(),
+                            'allDay': payload['all_day'],
+                        }
+                        all_events.append(event)
+                    except ValueError:
+                        continue
+                        
+            except Exception as exc:
+                logger.warning(f"Failed to fetch Canvas events from {source.name}: {exc}")
+                continue
+        
+        return all_events
+    
+    async def _fetch_canvas_events(self, *, url: str, source_name: str) -> dict:
+        """Fetch and parse Canvas ICS data without syncing to Google Calendar."""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.exception("Failed to fetch Canvas ICS feed", extra={"url": url})
+            return {"handled": False, "source": source_name, "error": str(exc)}
+
+        try:
+            calendar = Calendar.from_ical(response.content)
+        except Exception as exc:
+            logger.exception("Failed to parse ICS feed", extra={"url": url})
+            return {"handled": False, "source": source_name, "error": f"Invalid ICS data: {exc}"}
+
+        event_count = sum(1 for component in calendar.walk() if component.name == "VEVENT")
+
+        return {
+            "handled": True,
+            "source": source_name,
+            "events_count": event_count,
         }
 
     async def ingest_generic(self, payload: dict, *, settings: Settings) -> dict:
@@ -260,9 +332,20 @@ class IcsIngestionService:
 
     @staticmethod
     def _generate_event_id(source_name: str, uid: str) -> str:
-        # Google Calendar requires event IDs to be alphanumeric only (no hyphens/underscores)
-        # despite documentation suggesting otherwise
-        base = f"{source_name}{uid}".lower()
+        """
+        Generate a stable event ID for Google Calendar.
+
+        Normalizes Canvas source names to ensure consistent IDs:
+        - "Harvard Canvas", "MIT Canvas", "Canvas" all become "canvas"
+        - This prevents duplicates when syncing from multiple Canvas sources
+        """
+        # Normalize Canvas source names to prevent duplicates
+        normalized_source = source_name.lower()
+        if 'canvas' in normalized_source:
+            normalized_source = 'canvas'  # All Canvas sources use same prefix
+
+        # Google Calendar requires event IDs to be alphanumeric only
+        base = f"{normalized_source}{uid}".lower()
         # Remove all non-alphanumeric characters
         base = re.sub(r'[^a-z0-9]', '', base)
 

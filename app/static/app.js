@@ -20,6 +20,7 @@ let suggestionsCount = 0;
 let courseFilters = new Set(); // Enabled courses
 let allCourses = []; // All available courses
 let activeDayFilters = new Set([0, 1, 2, 3, 4, 5, 6]); // All days active by default (Mon=0, Sun=6)
+let currentView = 'grid'; // 'grid' or 'simple'
 
 // ---------------------------------------------------------------------------
 // Fetch helpers & notifications
@@ -74,6 +75,13 @@ function summarizeSyncResult(label, payload) {
         return;
     }
 
+    // Handle Canvas sync (which doesn't write to Google Calendar)
+    if (label === 'Canvas' && summary.note) {
+        const eventCount = summary.events_count ?? 0;
+        showToast('ingestResult', `Canvas: ${eventCount} events fetched (not synced to Google Calendar)`, false);
+        return;
+    }
+
     const created = summary.events_created ?? summary.eventsCreated ?? 0;
     const updated = summary.events_updated ?? summary.eventsUpdated ?? 0;
     const skippedCount = Array.isArray(summary.skipped) ? summary.skipped.length : 0;
@@ -117,6 +125,13 @@ function summarizeMultiSync(payload) {
 
         if (value.handled === false) {
             messages.push(`${label} skipped (${value.reason || 'n/a'})`);
+            return;
+        }
+
+        // Handle Canvas (which doesn't sync to Google Calendar)
+        if (label === 'Canvas' && value.note) {
+            const eventCount = value.events_count ?? 0;
+            messages.push(`${label}: ${eventCount} events (display only)`);
             return;
         }
 
@@ -197,8 +212,23 @@ function parseEvent(raw) {
         end = new Date(start.getTime() + 60 * 60 * 1000);
     }
 
-    if (raw.start && !raw.start.includes('T')) {
+    // Check if this is an all-day event
+    // Method 1: Backend explicitly marks it as allDay
+    if (raw.allDay === true) {
         allDay = true;
+    }
+    // Method 2: Date-only format (no 'T' in ISO string)
+    else if (raw.start && !raw.start.includes('T')) {
+        allDay = true;
+    }
+    // Method 3: Check if time is midnight to midnight (00:00 to 00:00 next day)
+    else if (start && end) {
+        const isStartMidnight = start.getHours() === 0 && start.getMinutes() === 0;
+        const isEndMidnight = end.getHours() === 0 && end.getMinutes() === 0;
+        const isDaySpan = (end.getTime() - start.getTime()) >= 86400000; // 24 hours
+        if (isStartMidnight && isEndMidnight && isDaySpan) {
+            allDay = true;
+        }
     }
 
     if (!start || !end) {
@@ -206,7 +236,7 @@ function parseEvent(raw) {
     }
 
     const sourceMatch = raw.title.match(/^\[(.+?)]\s*(.*)$/);
-    let source = 'Google';
+    let source = raw.source || 'Google';
     let title = raw.title;
 
     if (sourceMatch) {
@@ -290,6 +320,7 @@ function getEventLayout(dayEvents) {
 
 function renderTimeColumn() {
     const container = document.getElementById('timeColumn');
+    console.log('renderTimeColumn called, container:', container);
     container.innerHTML = '';
 
     // Render 30-minute slots (6 AM to 10 PM only)
@@ -325,7 +356,12 @@ function renderWeekView() {
         const dayColumn = document.createElement('div');
         dayColumn.className = 'day-column';
         const dateKey = date.toISOString().split('T')[0];
-        const dayEvents = filteredEvents.filter(ev => getEventKey(ev) === dateKey && !ev.allDay); // Exclude all-day events
+        // IMPORTANT: Only show timed events in the grid, exclude all-day/no-time events
+        const dayEvents = filteredEvents.filter(ev => {
+            if (getEventKey(ev) !== dateKey) return false;
+            if (ev.allDay) return false; // Exclude all-day events
+            return true;
+        });
 
         const header = document.createElement('div');
         header.className = 'day-header';
@@ -335,6 +371,13 @@ function renderWeekView() {
         `;
         if (sameDay(date, selectedDate)) {
             header.classList.add('active');
+        }
+        // Highlight today's date
+        {
+            const today = new Date();
+            if (sameDay(date, today)) {
+                header.classList.add('today');
+            }
         }
         header.addEventListener('click', () => {
             selectedDate = new Date(date);
@@ -354,18 +397,23 @@ function renderWeekView() {
         const layouts = getEventLayout(dayEvents);
         layouts.forEach(layout => {
             const { event, column, columns } = layout;
-            let top = clampMinutes(minutesSinceStart(event.start)) * HOUR_HEIGHT / 60;
-            const durationMinutes = Math.max((event.end - event.start) / 60000, 30);
-            let height = (Math.min(clampMinutes(minutesSinceStart(event.end)), (DAY_END_HOUR - DAY_START_HOUR) * 60) - clampMinutes(minutesSinceStart(event.start))) * HOUR_HEIGHT / 60;
-
-            if (height <= 0) {
-                height = Math.max(durationMinutes * HOUR_HEIGHT / 60, 32);
-            }
+            
+            // Calculate position in minutes from day start
+            const startMinutes = minutesSinceStart(event.start);
+            const endMinutes = minutesSinceStart(event.end);
+            
+            // Clamp to visible hours
+            const clampedStart = clampMinutes(startMinutes);
+            const clampedEnd = clampMinutes(endMinutes);
+            
+            // Convert to pixels (HOUR_HEIGHT pixels per 60 minutes)
+            const top = clampedStart * (HOUR_HEIGHT / 60);
+            const height = Math.max((clampedEnd - clampedStart) * (HOUR_HEIGHT / 60), 24);
 
             const widthPercent = 100 / columns;
             const card = document.createElement('div');
             card.className = 'event-card';
-            card.dataset.source = event.source;
+            card.dataset.source = event.source || 'Google';
             card.style.top = `${top}px`;
             card.style.height = `${height}px`;
             card.style.width = `calc(${widthPercent}% - 8px)`;
@@ -375,15 +423,46 @@ function renderWeekView() {
             const tooltipText = `${event.title}\n${formatTimeRange(event.start, event.end)}${event.location ? `\n${event.location}` : ''}`;
             card.title = tooltipText;
 
+            // Determine if event is from Canvas (protected from deletion)
+            const eventSource = event.source || 'Google';
+            const isCanvasEvent = eventSource.includes('Canvas');
+
+            // For short events (< 40px height), only show title
+            const isShort = height < 40;
+            
             card.innerHTML = `
+                <button class="event-delete-btn ${isCanvasEvent ? 'protected' : ''}"
+                        data-event-id="${event.id}"
+                        data-event-title="${escapeHtml(event.title)}"
+                        data-event-source="${eventSource}"
+                        title="${isCanvasEvent ? 'Canvas events cannot be deleted here' : 'Delete event'}">
+                    ${isCanvasEvent ? '🔒' : '×'}
+                </button>
                 <span class="event-title">${escapeHtml(event.title)}</span>
-                <span class="event-time">${formatTimeRange(event.start, event.end)}</span>
-                ${event.location ? `<span class="event-location">${escapeHtml(event.location)}</span>` : ''}
+                ${!isShort ? `<span class="event-time">${formatTimeRange(event.start, event.end)}</span>` : ''}
+                ${!isShort && event.location ? `<span class="event-location">${escapeHtml(event.location)}</span>` : ''}
             `;
-            card.addEventListener('click', () => {
-                selectedDate = new Date(event.start);
-                updateSelectedDayEvents();
-                renderWeekView();
+
+            // Add delete button event listener
+            const deleteBtn = card.querySelector('.event-delete-btn');
+            if (deleteBtn) {
+                deleteBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    deleteEvent(
+                        deleteBtn.dataset.eventId,
+                        deleteBtn.dataset.eventTitle,
+                        deleteBtn.dataset.eventSource
+                    );
+                });
+            }
+
+            card.addEventListener('click', (e) => {
+                // Don't trigger if clicking delete button
+                if (!e.target.classList.contains('event-delete-btn')) {
+                    selectedDate = new Date(event.start);
+                    updateSelectedDayEvents();
+                    renderWeekView();
+                }
             });
             body.appendChild(card);
         });
@@ -391,10 +470,42 @@ function renderWeekView() {
         dayColumn.appendChild(header);
         dayColumn.appendChild(body);
         grid.appendChild(dayColumn);
+
+        // Add current time indicator if this is today
+        {
+            const today = new Date();
+            if (sameDay(date, today)) {
+                addCurrentTimeIndicator(body);
+            }
+        }
     });
 
     updateAllDayEvents();
     // updateWeeklySummaries(); // Hidden per requirements
+}
+
+function addCurrentTimeIndicator(dayBody) {
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const dayStartMinutes = DAY_START_HOUR * 60;
+    const dayEndMinutes = DAY_END_HOUR * 60 + (DAY_END_EXTRA_SLOTS * 30);
+    
+    // Only show if current time is within visible hours
+    if (currentMinutes >= dayStartMinutes && currentMinutes <= dayEndMinutes) {
+        const minutesSinceStart = currentMinutes - dayStartMinutes;
+        const top = minutesSinceStart * (HOUR_HEIGHT / 60);
+        
+        const timeLine = document.createElement('div');
+        timeLine.className = 'current-time-line';
+        timeLine.style.top = `${top}px`;
+        dayBody.appendChild(timeLine);
+        
+        // Update every minute
+        setTimeout(() => {
+            timeLine.remove();
+            addCurrentTimeIndicator(dayBody);
+        }, 60000);
+    }
 }
 
 function sameDay(a, b) {
@@ -427,7 +538,7 @@ function updateSelectedDayEvents() {
     if (dayEvents.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.textContent = 'No events scheduled for this day.';
+        empty.textContent = events.length === 0 ? '📭 No events synced yet. Sync your calendar sources to get started.' : 'No events scheduled for this day.';
         container.appendChild(empty);
         return;
     }
@@ -458,7 +569,7 @@ function updateUpcomingEvents() {
     if (upcoming.length === 0) {
         const empty = document.createElement('div');
         empty.className = 'empty-state';
-        empty.textContent = 'No upcoming events.';
+        empty.textContent = '📭 No events yet. Click "Sync All Sources" to load your calendar.';
         container.appendChild(empty);
         return;
     }
@@ -508,7 +619,7 @@ function changeWeek(delta) {
 // Data loading
 // ---------------------------------------------------------------------------
 
-async function loadRealEvents() {
+async function loadRealEvents(showToastOnError = true) {
     try {
         const response = await fetch(`${API_BASE}/events`);
         const data = await response.json();
@@ -522,6 +633,20 @@ async function loadRealEvents() {
             .filter(Boolean)
             .sort((a, b) => a.start - b.start);
 
+        // Debug: Log all-day vs timed events
+        const allDayCount = events.filter(ev => ev.allDay).length;
+        const timedCount = events.filter(ev => !ev.allDay).length;
+        console.log(`Loaded ${events.length} events: ${timedCount} timed, ${allDayCount} all-day`);
+        
+        // Debug: Log sample of all-day events to check if holidays are included
+        const sampleAllDay = events.filter(ev => ev.allDay).slice(0, 5);
+        if (sampleAllDay.length > 0) {
+            console.log('Sample all-day events:', sampleAllDay.map(ev => ev.title));
+        }
+
+        // Save to localStorage for persistence across refreshes
+        saveEventsToCache(data.events);
+
         updateCourseFilters(); // Extract and initialize course filters
         renderWeekView();
         updateSelectedDayEvents();
@@ -530,9 +655,68 @@ async function loadRealEvents() {
         return { success: true };
     } catch (error) {
         console.error('Failed to load events:', error);
-        showToast('ingestResult', `Failed to load events: ${error.message}`, true);
+        if (showToastOnError) {
+            showToast('ingestResult', `Failed to load events: ${error.message}`, true);
+        }
         return { success: false, error };
     }
+}
+
+// ---------------------------------------------------------------------------
+// Event Caching (localStorage for persistence)
+// ---------------------------------------------------------------------------
+
+function saveEventsToCache(rawEvents) {
+    try {
+        const cacheData = {
+            events: rawEvents,
+            timestamp: new Date().toISOString(),
+            version: '1.0'
+        };
+        localStorage.setItem('smartcal_events_cache', JSON.stringify(cacheData));
+        localStorage.setItem('smartcal_last_sync', new Date().toISOString());
+        console.log('Events cached to localStorage');
+    } catch (error) {
+        console.warn('Failed to cache events:', error);
+    }
+}
+
+function loadEventsFromCache() {
+    try {
+        const cached = localStorage.getItem('smartcal_events_cache');
+        if (!cached) return null;
+
+        const cacheData = JSON.parse(cached);
+        const cacheAge = Date.now() - new Date(cacheData.timestamp).getTime();
+        const maxAge = 24 * 60 * 60 * 1000; // 24 hours
+
+        // Return cached data even if old (better than nothing)
+        // Background sync will update it
+        if (cacheAge < maxAge) {
+            console.log(`Loaded ${cacheData.events.length} events from cache (${Math.round(cacheAge / 60000)} minutes old)`);
+        } else {
+            console.log(`Loaded ${cacheData.events.length} events from cache (stale, will refresh in background)`);
+        }
+
+        return cacheData.events;
+    } catch (error) {
+        console.warn('Failed to load cache:', error);
+        return null;
+    }
+}
+
+function getLastSyncTime() {
+    try {
+        const lastSync = localStorage.getItem('smartcal_last_sync');
+        if (lastSync) {
+            const syncDate = new Date(lastSync);
+            const minutesAgo = Math.round((Date.now() - syncDate.getTime()) / 60000);
+            return `${minutesAgo} min ago`;
+        }
+    } catch (error) {
+        return 'Never';
+    }
+    return 'Never';
 }
 
 // ---------------------------------------------------------------------------
@@ -790,6 +974,7 @@ async function suggestTime() {
 function updateLastSync() {
     const now = new Date();
     document.getElementById('lastSync').textContent = now.toLocaleTimeString();
+    localStorage.setItem('smartcal_last_sync', now.toISOString());
 }
 
 async function ingestGmail(evt) {
@@ -905,6 +1090,34 @@ async function syncAll(evt) {
     }
 }
 
+async function autoSyncOnLoad() {
+    try {
+        // Silently sync Canvas and Google Calendar in the background
+        console.log('Auto-syncing Canvas...');
+        const canvasResult = await apiCall('/ingest/canvas', {}).catch(e => {
+            console.warn('Canvas sync failed:', e);
+            return null;
+        });
+        
+        console.log('Auto-syncing Google Calendar...');
+        // Just reload events (which includes Google Calendar)
+        const loadResult = await loadRealEvents(false); // Don't show error toast
+        
+        if (loadResult.success) {
+            console.log('✅ Auto-sync complete');
+            showToast('ingestResult', '✅ Calendar synced with Canvas & Google', false, 3000);
+            updateLastSync();
+        } else {
+            console.warn('Auto-sync had issues, but using cached data');
+            showToast('ingestResult', '⚠️ Sync issue - showing cached data', true, 3000);
+        }
+    } catch (error) {
+        console.error('Auto-sync failed:', error);
+        // Don't show error toast - user already has cached data
+        showToast('ingestResult', '⚠️ Could not refresh - using cached data', true, 3000);
+    }
+}
+
 function toggleAutoSync() {
     const toggle = document.getElementById('autoSyncToggle');
     const intervalSelect = document.getElementById('syncInterval');
@@ -978,43 +1191,54 @@ async function checkApiStatus() {
 }
 
 function loadSampleEvents() {
+    // No sample events - start with a clean slate
     const today = new Date();
     selectedDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-
-    const makeDate = (base, hours, minutes) => {
-        const d = new Date(base);
-        d.setHours(hours, minutes, 0, 0);
-        return d;
-    };
-
-    const samples = [
-        { title: 'Morning Yoga', start: makeDate(selectedDate, 7, 0), end: makeDate(selectedDate, 8, 0), location: 'Studio', source: 'Google', allDay: false },
-        { title: 'Product Sync', start: makeDate(selectedDate, 10, 30), end: makeDate(selectedDate, 11, 30), location: 'Zoom', source: 'Google', allDay: false },
-        { title: 'Dinner with Alex', start: makeDate(selectedDate, 18, 0), end: makeDate(selectedDate, 19, 30), location: 'Downtown', source: 'Google', allDay: false },
-    ];
-
-    events = samples.map((event, idx) => ({
-        ...event,
-        id: `sample-${idx}`,
-    }));
+    
+    events = [];
 
     renderWeekView();
     updateSelectedDayEvents();
     updateUpcomingEvents();
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     renderTimeColumn();
     checkApiStatus();
     initVoiceRecognition();
-    loadRealEvents().then(result => {
-        if (!result?.success) {
-            loadSampleEvents();
-        }
-    });
-
-    updateSelectedDayEvents();
-    updateUpcomingEvents();
+    
+    // Try to load cached events first (instant display)
+    const cachedEvents = loadEventsFromCache();
+    if (cachedEvents && cachedEvents.length > 0) {
+        // Display cached events immediately
+        events = cachedEvents
+            .map(parseEvent)
+            .filter(Boolean)
+            .sort((a, b) => a.start - b.start);
+        
+        console.log(`Displaying ${events.length} cached events (syncing in background...)`);
+        updateCourseFilters();
+        renderWeekView();
+        updateSelectedDayEvents();
+        updateUpcomingEvents();
+        updateAllDayEvents();
+        
+        // Show when data was last synced
+        const lastSync = getLastSyncTime();
+        showToast('ingestResult', `📋 Showing cached data (last sync: ${lastSync}). Refreshing...`, false, 3000);
+    } else {
+        // No cache, start with empty
+        loadSampleEvents();
+        updateSelectedDayEvents();
+        updateUpcomingEvents();
+        showToast('ingestResult', '🔄 Loading events for the first time...', false, 2000);
+    }
+    
+    // Auto-sync in background (refresh data from server)
+    setTimeout(async () => {
+        console.log('🔄 Auto-syncing Canvas and Google Calendar...');
+        await autoSyncOnLoad();
+    }, 1000); // Wait 1 second after page load to not block initial render
 
     document.getElementById('voiceInput').addEventListener('keydown', (e) => {
         if (e.key === 'Enter' && e.ctrlKey) {
@@ -1043,14 +1267,56 @@ document.addEventListener('DOMContentLoaded', () => {
 // ---------------------------------------------------------------------------
 
 function extractCourseCode(title) {
-    // Extract course codes like "DPI 851M", "EDU H12X", "EDU T564A" from [Source] prefix
-    const match = title.match(/\[([^\]]+)\]\s*([A-Z]+\s+[A-Z0-9]+)/);
-    if (match) {
-        return match[2]; // Return "DPI 851M" part
+    // Extract course codes from various formats:
+    // - "[DPI 851M]" (all-day event format) → "DPI 851M"
+    // - "XXX Y111: Course Name" → "XXX Y111"
+    // - "XXX 111Y: Course Name" → "XXX 111Y"
+    // - "[Canvas] XXX Y111: Course Name" → "XXX Y111"
+    // - "XXX Y111 - Assignment" → "XXX Y111"
+
+    // Special pattern for all-day events: "[DPI 851M]" format
+    const allDayPattern = title.match(/^\[([A-Z]{2,4}\s+[A-Z]?\d+[A-Z]?)\]$/i);
+    if (allDayPattern) {
+        const code = allDayPattern[1].toUpperCase();
+        // Don't filter HW here - these are course names in brackets
+        return code;
     }
-    // Try without prefix
-    const directMatch = title.match(/^([A-Z]+\s+[A-Z0-9]+)/);
-    return directMatch ? directMatch[1] : null;
+
+    // Remove source prefix like [Canvas], [Harvard Canvas], etc. (but not course codes in brackets)
+    let cleanTitle = title.replace(/^\[(Harvard Canvas|MIT Canvas|Canvas|[^\]]+)\]\s*/, '');
+
+    // Pattern 1: Three letters + space + letter/number combo (e.g., "DPI 851M", "EDU H12X", "EDU T564A")
+    // Matches: XXX Y111, XXX 111Y, XXX 851M, etc.
+    const pattern1 = cleanTitle.match(/^([A-Z]{2,4}\s+[A-Z]?\d+[A-Z]?)/i);
+    if (pattern1) {
+        const code = pattern1[1].toUpperCase();
+        // Filter out homework numbers like "HW 1", "HW 2", etc.
+        if (!code.match(/^HW\s+\d+$/i) && !code.match(/^HOMEWORK\s+\d+$/i)) {
+            return code;
+        }
+    }
+
+    // Pattern 2: After removing prefix, look for course code followed by colon
+    // e.g., "XXX Y111: Assignment Name"
+    const pattern2 = cleanTitle.match(/^([A-Z]{2,4}\s+[A-Z]?\d+[A-Z]?):/i);
+    if (pattern2) {
+        const code = pattern2[1].toUpperCase();
+        if (!code.match(/^HW\s+\d+$/i) && !code.match(/^HOMEWORK\s+\d+$/i)) {
+            return code;
+        }
+    }
+
+    // Pattern 3: Course code followed by dash or hyphen
+    // e.g., "XXX Y111 - Assignment"
+    const pattern3 = cleanTitle.match(/^([A-Z]{2,4}\s+[A-Z]?\d+[A-Z]?)\s*[-–—]/i);
+    if (pattern3) {
+        const code = pattern3[1].toUpperCase();
+        if (!code.match(/^HW\s+\d+$/i) && !code.match(/^HOMEWORK\s+\d+$/i)) {
+            return code;
+        }
+    }
+
+    return null;
 }
 
 function updateCourseFilters() {
@@ -1122,15 +1388,18 @@ function selectAllCourses(selectAll) {
 }
 
 function getFilteredEvents() {
-    if (courseFilters.size === 0) {
-        return events; // Show all if nothing selected
-    }
-
-    return events.filter(event => {
-        const code = extractCourseCode(event.title);
-        if (!code) return true; // Show events without course codes
-        return courseFilters.has(code);
-    });
+    // Since course filters are hidden, always show all events
+    return events;
+    
+    // Old logic (kept for reference if filters are re-enabled):
+    // if (courseFilters.size === 0) {
+    //     return events; // Show all if nothing selected
+    // }
+    // return events.filter(event => {
+    //     const code = extractCourseCode(event.title);
+    //     if (!code) return true; // Show events without course codes
+    //     return courseFilters.has(code);
+    // });
 }
 
 // ---------------------------------------------------------------------------
@@ -1140,7 +1409,7 @@ function getFilteredEvents() {
 function updateAllDayEvents() {
     const filteredEvents = getFilteredEvents();
 
-    // Update banner (now BELOW week grid)
+    // Update right panel all-day section
     const banner = document.getElementById('allDayBanner');
     const bannerContainer = document.getElementById('allDayEvents');
 
@@ -1151,52 +1420,45 @@ function updateAllDayEvents() {
     const weekEnd = new Date(weekDates[6]);
     weekEnd.setHours(23, 59, 59, 999);
 
-    // Filter by selected days (Mon=0, Sun=6)
-    const allDayEvents = filteredEvents.filter(ev => {
+    // Get ALL all-day events in the week (before day filtering)
+    const allAllDayEventsInWeek = filteredEvents.filter(ev => {
         if (!ev.allDay) return false;
         if (ev.start < weekStart || ev.start > weekEnd) return false;
+        return true;
+    });
 
-        // Check if this event's day of week is in active filters
+    // If there are NO all-day events at all in the week, hide the section
+    if (allAllDayEventsInWeek.length === 0) {
+        banner.style.display = 'none';
+        return;
+    }
+
+    // Always show the section if there are any all-day events in the week
+    banner.style.display = 'block';
+
+    // Filter by selected days (Mon=0, Sun=6)
+    const allDayEvents = allAllDayEventsInWeek.filter(ev => {
         const dayOfWeek = (ev.start.getDay() + 6) % 7; // Convert Sun=0 to Mon=0 format
         return activeDayFilters.has(dayOfWeek);
     });
 
-    // Always show banner (keep day filter buttons visible)
-    banner.style.display = 'block';
-
     if (allDayEvents.length > 0) {
-        bannerContainer.innerHTML = allDayEvents.map(ev => {
+        // Sort by date
+        const sortedEvents = allDayEvents.sort((a, b) => a.start - b.start);
+        bannerContainer.innerHTML = sortedEvents.map(ev => {
             const dayOfWeek = (ev.start.getDay() + 6) % 7;
             const dayName = DAY_NAMES[dayOfWeek];
             return `
                 <div class="all-day-event-card" title="${escapeHtml(ev.title)}\n${ev.start.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}">
-                    <span class="event-date">${dayName} ${ev.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                    <span class="event-date">${dayName}<br>${ev.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
                     <span class="event-title">${escapeHtml(ev.title)}</span>
                 </div>
             `;
         }).join('');
     } else {
-        // Show message when no events match filter
-        bannerContainer.innerHTML = '<div class="empty-state">No events for selected days</div>';
+        // Show message when all days are filtered out
+        bannerContainer.innerHTML = '<div class="empty-state">Select days above to see events</div>';
     }
-
-    // Update right panel all-day section
-    const rightPanel = document.getElementById('rightPanelAllDay');
-    if (!rightPanel) return;
-
-    const allDayAll = filteredEvents.filter(ev => ev.allDay);
-
-    if (allDayAll.length === 0) {
-        rightPanel.innerHTML = '<div class="empty-state">No all-day events</div>';
-        return;
-    }
-
-    rightPanel.innerHTML = allDayAll.slice(0, 10).map(ev => `
-        <div class="event-row">
-            <span class="row-time">${ev.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-            <span class="row-title">${escapeHtml(ev.title)}</span>
-        </div>
-    `).join('');
 }
 
 function filterAllDayByDay(dayIndex) {
@@ -1226,4 +1488,380 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+// Manual Event Creation Modal
+// ---------------------------------------------------------------------------
+
+function showAddEventModal() {
+    const modal = document.getElementById('addEventModal');
+    modal.style.display = 'flex';
+    
+    // Set default date to today or selected date
+    const dateInput = document.getElementById('eventDate');
+    const dateToUse = selectedDate || new Date();
+    dateInput.value = dateToUse.toISOString().split('T')[0];
+    
+    // Clear previous values
+    document.getElementById('eventTitle').value = '';
+    document.getElementById('eventLocation').value = '';
+    document.getElementById('eventDescription').value = '';
+    document.getElementById('eventAllDay').checked = false;
+    document.getElementById('timeFields').style.display = 'grid';
+    
+    // Focus title field
+    setTimeout(() => document.getElementById('eventTitle').focus(), 100);
+}
+
+function hideAddEventModal() {
+    document.getElementById('addEventModal').style.display = 'none';
+}
+
+function toggleEventTime() {
+    const isAllDay = document.getElementById('eventAllDay').checked;
+    document.getElementById('timeFields').style.display = isAllDay ? 'none' : 'grid';
+}
+
+async function submitManualEvent() {
+    const title = document.getElementById('eventTitle').value.trim();
+    const date = document.getElementById('eventDate').value;
+    const isAllDay = document.getElementById('eventAllDay').checked;
+    const startTime = document.getElementById('eventStartTime').value;
+    const endTime = document.getElementById('eventEndTime').value;
+    const location = document.getElementById('eventLocation').value.trim();
+    const description = document.getElementById('eventDescription').value.trim();
+    
+    // Validation
+    if (!title) {
+        showToast('voiceResult', 'Please enter an event title', true);
+        return;
+    }
+    
+    if (!date) {
+        showToast('voiceResult', 'Please select a date', true);
+        return;
+    }
+    
+    if (!isAllDay && (!startTime || !endTime)) {
+        showToast('voiceResult', 'Please enter start and end times', true);
+        return;
+    }
+    
+    if (!isAllDay && startTime >= endTime) {
+        showToast('voiceResult', 'End time must be after start time', true);
+        return;
+    }
+    
+    try {
+        // Build datetime strings
+        let startDateTime, endDateTime;
+        
+        if (isAllDay) {
+            // All-day event: use date only
+            startDateTime = new Date(date);
+            endDateTime = new Date(date);
+            endDateTime.setDate(endDateTime.getDate() + 1);
+        } else {
+            // Timed event: combine date and time
+            startDateTime = new Date(`${date}T${startTime}`);
+            endDateTime = new Date(`${date}T${endTime}`);
+        }
+        
+        // Call Google Calendar API via backend
+        const response = await fetch(`${API_BASE}/events/create`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                summary: title,
+                start_time: startDateTime.toISOString(),
+                end_time: endDateTime.toISOString(),
+                location: location || null,
+                description: description || null,
+                all_day: isAllDay
+            })
+        });
+        
+        const result = await response.json();
+        
+        if (response.ok && result.status === 'ok') {
+            showToast('ingestResult', `✅ Event "${title}" created!`, false);
+            hideAddEventModal();
+            
+            // Refresh calendar to show new event
+            await loadRealEvents();
+        } else {
+            throw new Error(result.error || 'Failed to create event');
+        }
+    } catch (error) {
+        console.error('Failed to create event:', error);
+        showToast('voiceResult', `Failed to create event: ${error.message}`, true);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Event Deletion
+// ---------------------------------------------------------------------------
+
+async function deleteEvent(eventId, eventTitle, eventSource) {
+    // Check if event is from Canvas (protected)
+    if (eventSource.includes('Canvas')) {
+        showToast('ingestResult', 'Canvas events cannot be deleted from this interface. Please delete from Canvas directly.', true);
+        return;
+    }
+
+    // Confirmation dialog
+    if (!confirm(`Delete "${eventTitle}"?\n\nThis will permanently remove the event from your Google Calendar.`)) {
+        return;
+    }
+
+    try {
+        const result = await apiCall('/events/delete', {
+            event_id: eventId,
+            title: eventTitle,
+            source: eventSource
+        });
+
+        if (result.status === 'ok') {
+            showToast('ingestResult', `Deleted "${eventTitle}"`, false);
+            // Refresh calendar to show updated state
+            await loadRealEvents();
+        } else if (result.protected) {
+            showToast('ingestResult', result.error, true);
+        } else {
+            showToast('ingestResult', `Failed to delete: ${result.error}`, true);
+        }
+    } catch (error) {
+        showToast('ingestResult', `Failed to delete event: ${error.message}`, true);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Batch Event Import
+// ---------------------------------------------------------------------------
+
+function handleFileUpload(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const text = e.target.result;
+        document.getElementById('batchEventsInput').value = text;
+        showToast('batchImportResult', `File "${file.name}" loaded. Click "Import Events" to proceed.`, false, 3000);
+    };
+    reader.readAsText(file);
+}
+
+function parseCSV(csvText) {
+    const lines = csvText.trim().split('\n');
+    if (lines.length < 2) {
+        throw new Error('CSV must have at least a header row and one data row');
+    }
+
+    const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+    const events = [];
+
+    for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+
+        // Simple CSV parsing (doesn't handle quoted commas)
+        const values = line.split(',').map(v => v.trim());
+        const event = {};
+
+        headers.forEach((header, index) => {
+            const value = values[index] || '';
+            if (header === 'all_day') {
+                event[header] = value.toLowerCase() === 'true' || value.toLowerCase() === 'yes';
+            } else {
+                event[header] = value;
+            }
+        });
+
+        events.push(event);
+    }
+
+    return events;
+}
+
+async function importBatchEvents() {
+    const csvText = document.getElementById('batchEventsInput').value.trim();
+
+    if (!csvText) {
+        showToast('batchImportResult', 'Please upload a file or paste CSV data', true);
+        return;
+    }
+
+    try {
+        // Parse CSV
+        const events = parseCSV(csvText);
+
+        if (events.length === 0) {
+            showToast('batchImportResult', 'No events found in CSV data', true);
+            return;
+        }
+
+        // Show loading state
+        showToast('batchImportResult', `Importing ${events.length} event(s)...`, false, 30000);
+
+        // Send to backend
+        const result = await apiCall('/events/batch_import', { events });
+
+        if (result.status === 'ok') {
+            const message = `Successfully imported ${result.created_count} event(s)` +
+                           (result.error_count > 0 ? ` (${result.error_count} errors)` : '');
+
+            showToast('batchImportResult', message, result.error_count > 0, 5000);
+
+            if (result.errors && result.errors.length > 0) {
+                console.error('Import errors:', result.errors);
+            }
+
+            // Clear the input
+            document.getElementById('batchEventsInput').value = '';
+            document.getElementById('csvFileInput').value = '';
+
+            // Refresh calendar to show new events
+            await loadRealEvents();
+        } else {
+            showToast('batchImportResult', `Import failed: ${result.error}`, true);
+        }
+    } catch (error) {
+        console.error('Batch import error:', error);
+        showToast('batchImportResult', `Import failed: ${error.message}`, true);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// View Switching (Grid vs Simple)
+// ---------------------------------------------------------------------------
+
+function switchView(view) {
+    currentView = view;
+
+    const gridCalendar = document.getElementById('gridCalendar');
+    const simpleCalendar = document.getElementById('simpleCalendar');
+    const gridViewBtn = document.getElementById('gridViewBtn');
+    const simpleViewBtn = document.getElementById('simpleViewBtn');
+
+    if (view === 'grid') {
+        gridCalendar.style.display = 'flex';
+        simpleCalendar.style.display = 'none';
+        gridViewBtn.classList.add('active');
+        simpleViewBtn.classList.remove('active');
+    } else {
+        gridCalendar.style.display = 'none';
+        simpleCalendar.style.display = 'flex';
+        gridViewBtn.classList.remove('active');
+        simpleViewBtn.classList.add('active');
+        renderSimpleView();
+    }
+}
+
+function renderSimpleView() {
+    const today = new Date();
+    const todayKey = today.toISOString().split('T')[0];
+
+    // Update date display
+    const dateOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
+    document.getElementById('simpleDate').textContent = today.toLocaleDateString(undefined, dateOptions);
+
+    // Get today's events
+    const todayEvents = events.filter(ev => {
+        if (ev.allDay) {
+            const eventDate = new Date(ev.start);
+            return eventDate.toISOString().split('T')[0] === todayKey;
+        } else {
+            return getEventKey(ev) === todayKey;
+        }
+    }).sort((a, b) => a.start - b.start);
+
+    // Generate natural language summary
+    const summary = generateNaturalLanguageSummary(todayEvents);
+    document.getElementById('simpleSummary').innerHTML = `<p>${summary}</p>`;
+
+    // Hide event cards - they're not needed in simple view
+    document.getElementById('simpleEventsList').style.display = 'none';
+}
+
+function generateNaturalLanguageSummary(todayEvents) {
+    if (todayEvents.length === 0) {
+        return "Your plan today is to relax and recharge.<br>You have a completely free schedule!";
+    }
+
+    const greetings = [
+        "Here's what your day looks like:",
+        "Your plan for today:",
+        "Here's your schedule for today:",
+        "Today you have:"
+    ];
+
+    const greeting = greetings[Math.floor(Math.random() * greetings.length)];
+
+    // Separate all-day and timed events
+    const allDayEvents = todayEvents.filter(ev => ev.allDay);
+    const timedEvents = todayEvents.filter(ev => !ev.allDay);
+
+    let lines = [greeting];
+
+    // Add summary sentence
+    if (allDayEvents.length > 0 && timedEvents.length > 0) {
+        lines.push(`You have ${allDayEvents.length} all-day event${allDayEvents.length > 1 ? 's' : ''} and ${timedEvents.length} scheduled activit${timedEvents.length > 1 ? 'ies' : 'y'}.`);
+    } else if (allDayEvents.length > 0) {
+        lines.push(`You have ${allDayEvents.length} all-day event${allDayEvents.length > 1 ? 's' : ''}.`);
+    } else if (timedEvents.length > 0) {
+        const firstEvent = timedEvents[0];
+        const lastEvent = timedEvents[timedEvents.length - 1];
+        const startTime = firstEvent.start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        const endTime = lastEvent.end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+        lines.push(`You have ${timedEvents.length} scheduled activit${timedEvents.length > 1 ? 'ies' : 'y'} from ${startTime} to ${endTime}.`);
+    }
+
+    lines.push(''); // Blank line before event list
+
+    // List all-day events
+    if (allDayEvents.length > 0) {
+        lines.push('<strong>All-Day Events:</strong>');
+        allDayEvents.forEach(ev => {
+            lines.push(`• ${escapeHtml(ev.title)}`);
+        });
+        if (timedEvents.length > 0) {
+            lines.push(''); // Blank line between sections
+        }
+    }
+
+    // List timed events
+    if (timedEvents.length > 0) {
+        if (allDayEvents.length === 0) {
+            lines.push('<strong>Your Schedule:</strong>');
+        } else {
+            lines.push('<strong>Timed Events:</strong>');
+        }
+
+        timedEvents.forEach(ev => {
+            const timeStr = formatTimeRange(ev.start, ev.end);
+            const location = ev.location ? ` (${escapeHtml(ev.location)})` : '';
+            lines.push(`• ${timeStr} - ${escapeHtml(ev.title)}${location}`);
+        });
+    }
+
+    // Calculate total busy time
+    const totalMinutes = timedEvents.reduce((sum, ev) => {
+        return sum + (new Date(ev.end) - new Date(ev.start)) / 60000;
+    }, 0);
+
+    if (totalMinutes > 0) {
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = Math.round(totalMinutes % 60);
+        lines.push(''); // Blank line before total
+        if (hours > 0) {
+            lines.push(`<strong>Total scheduled time:</strong> ${hours} hour${hours > 1 ? 's' : ''}${minutes > 0 ? ` and ${minutes} minutes` : ''}.`);
+        } else if (minutes > 0) {
+            lines.push(`<strong>Total scheduled time:</strong> ${minutes} minutes.`);
+        }
+    }
+
+    // Join with line breaks
+    return lines.join('<br>');
 }

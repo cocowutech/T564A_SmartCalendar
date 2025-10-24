@@ -1,0 +1,5 @@
+title,date,start_time,end_time,location,description,all_day
+Team Meeting,2025-10-25,09:00,10:00,Conference Room A,Weekly team sync,FALSE
+Project Review,2025-10-25,14:00,15:30,Zoom,Review project milestones,FALSE
+Lunch Break,2025-10-25,,,Break Room,,TRUE
+Client Call,2025-10-26,11:00,12:00,Phone,Discuss requirements,FALSE

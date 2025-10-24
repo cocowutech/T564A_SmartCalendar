@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os.path
 import pickle
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -113,16 +114,34 @@ class GoogleCalendarService:
         for event in events:
             start = event['start'].get('dateTime', event['start'].get('date'))
             end = event['end'].get('dateTime', event['end'].get('date'))
+            title = event.get('summary', 'No Title')
+
+            # Detect event source from title prefix
+            # Events synced from Canvas have [Canvas], [Harvard Canvas], [MIT Canvas] prefix
+            source = 'Google'  # Default
+            if title.startswith('[Harvard Canvas]'):
+                source = 'Harvard Canvas'
+            elif title.startswith('[MIT Canvas]'):
+                source = 'MIT Canvas'
+            elif title.startswith('[Canvas]'):
+                source = 'Canvas'
+            elif title.startswith('['):
+                # Extract any other source in brackets
+                match = re.match(r'^\[([^\]]+)\]', title)
+                if match:
+                    source = match.group(1)
 
             formatted_events.append({
                 'id': event['id'],
-                'title': event.get('summary', 'No Title'),
+                'title': title,
                 'date': start.split('T')[0] if 'T' in start else start,
                 'time': start.split('T')[1][:5] if 'T' in start else None,
                 'location': event.get('location'),
                 'description': event.get('description'),
                 'start': start,
-                'end': end
+                'end': end,
+                'source': source,
+                'allDay': 'date' in event['start']  # All-day events use 'date' instead of 'dateTime'
             })
 
         return formatted_events
@@ -282,4 +301,21 @@ class GoogleCalendarService:
                     body=event_body,
                 ).execute()
                 return {"action": "updated", "event": event}
+            raise
+
+    async def delete_event(self, settings: Settings, event_id: str) -> dict:
+        """Delete an event from Google Calendar."""
+        service = self._get_calendar_service(settings)
+
+        try:
+            service.events().delete(
+                calendarId=settings.google_calendar_id,
+                eventId=event_id
+            ).execute()
+            logger.info(f"Deleted event: {event_id}")
+            return {"action": "deleted", "event_id": event_id}
+        except HttpError as exc:
+            if exc.resp.status == 404:
+                logger.warning(f"Event {event_id} not found, may already be deleted")
+                return {"action": "not_found", "event_id": event_id}
             raise

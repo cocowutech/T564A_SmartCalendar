@@ -1260,16 +1260,9 @@ body {
 .simple-summary {
     background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.1));
     border-left: 4px solid var(--primary);
-    padding: 1.5rem 2rem;
+    padding: 1.5rem;
     border-radius: 0.75rem;
     margin-bottom: 2rem;
-}
-
-.simple-summary p {
-    font-size: 1.125rem;
-    line-height: 2.2;
-    color: var(--text-primary);
-    margin: 0;
 }
 
 .simple-summary p {
