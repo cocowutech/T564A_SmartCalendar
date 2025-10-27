@@ -1330,3 +1330,262 @@ body {
     background: var(--primary);
     color: white;
 }
+
+/* =========================================================================
+   Enhanced Responsive Design - Mobile First
+   ========================================================================= */
+
+/* Tablet Portrait (600px - 900px) */
+@media (max-width: 900px) {
+    .week-grid {
+        gap: 0.25rem;
+    }
+
+    .day-column {
+        min-width: 100px;
+    }
+}
+
+/* Mobile Landscape & Large Phones (480px - 600px) */
+@media (max-width: 600px) {
+    .app-header {
+        gap: 1rem;
+        padding: 1rem;
+    }
+
+    .header-left {
+        width: 100%;
+    }
+
+    .app-title {
+        font-size: 1.5rem;
+    }
+
+    .header-actions {
+        width: 100%;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+    }
+
+    .view-toggle {
+        width: 100%;
+        margin-right: 0 !important;
+    }
+
+    .view-btn {
+        flex: 1;
+        font-size: 0.875rem;
+        padding: 0.5rem 0.75rem;
+    }
+
+    .btn {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.875rem;
+    }
+
+    .week-header {
+        flex-direction: column;
+        gap: 0.75rem;
+    }
+
+    .week-nav {
+        width: 100%;
+    }
+
+    .weekly-calendar {
+        gap: 0.5rem;
+        --hour-height: 48px;
+    }
+
+    .week-grid {
+        gap: 0.25rem;
+        grid-template-columns: repeat(7, minmax(60px, 1fr));
+        overflow-x: auto;
+    }
+
+    .day-column {
+        min-width: 60px;
+    }
+
+    .day-header {
+        padding: 0.5rem 0.25rem;
+        font-size: 0.75rem;
+    }
+
+    .day-name {
+        font-size: 0.7rem;
+    }
+
+    .day-date {
+        font-size: 0.85rem;
+    }
+
+    .time-column {
+        width: 40px;
+    }
+
+    .time-slot {
+        font-size: 0.7rem;
+    }
+
+    .panel-card h2 {
+        font-size: 1.125rem;
+    }
+
+    /* Simple Calendar View - Mobile */
+    .simple-calendar-view {
+        padding: 1.5rem 1rem;
+    }
+
+    .simple-greeting h2 {
+        font-size: 1.75rem;
+    }
+
+    .simple-greeting p {
+        font-size: 1rem;
+    }
+
+    .simple-summary {
+        padding: 1rem 1.25rem;
+    }
+
+    .simple-summary p {
+        font-size: 1rem;
+    }
+}
+
+/* Small Mobile (320px - 480px) */
+@media (max-width: 480px) {
+    .app-header {
+        padding: 0.75rem;
+    }
+
+    .app-title {
+        font-size: 1.25rem;
+    }
+
+    .term-label {
+        font-size: 0.75rem;
+        padding: 0.25rem 0.5rem;
+    }
+
+    .app-body {
+        padding: 0.75rem;
+        gap: 0.75rem;
+    }
+
+    .calendar-section {
+        padding: 0.5rem;
+    }
+
+    .week-range h2 {
+        font-size: 1rem;
+    }
+
+    .nav-btn {
+        width: 2rem;
+        height: 2rem;
+        font-size: 1.25rem;
+    }
+
+    /* Stack days vertically on very small screens */
+    .weekly-calendar {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .time-column {
+        display: none;
+    }
+
+    .week-grid {
+        grid-template-columns: 1fr;
+        gap: 0.5rem;
+    }
+
+    .day-column {
+        width: 100%;
+        min-width: 100%;
+    }
+
+    .day-header {
+        padding: 0.75rem 1rem;
+        font-size: 0.875rem;
+        flex-direction: row;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .day-name {
+        font-size: 0.8rem;
+    }
+
+    .day-date {
+        font-size: 1rem;
+    }
+
+    .event-card {
+        padding: 0.5rem;
+        font-size: 0.8rem;
+    }
+
+    .panel-card {
+        padding: 0.75rem;
+    }
+
+    .sync-grid {
+        grid-template-columns: 1fr;
+        gap: 0.5rem;
+    }
+
+    /* Simple Calendar View - Small Mobile */
+    .simple-calendar-view {
+        padding: 1rem 0.75rem;
+    }
+
+    .simple-greeting h2 {
+        font-size: 1.5rem;
+    }
+
+    .simple-greeting p {
+        font-size: 0.875rem;
+    }
+
+    .simple-summary {
+        padding: 0.875rem 1rem;
+        font-size: 0.9375rem;
+    }
+}
+
+/* Touch device optimizations */
+@media (hover: none) and (pointer: coarse) {
+    .btn,
+    .nav-btn,
+    .day-header {
+        min-height: 44px;
+        min-width: 44px;
+    }
+
+    .event-card {
+        cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .event-card:active {
+        transform: scale(0.98);
+    }
+}
+
+/* Landscape on mobile */
+@media (max-width: 900px) and (orientation: landscape) {
+    .app-header {
+        padding: 0.5rem 1rem;
+    }
+
+    .app-title {
+        font-size: 1.25rem;
+    }
+
+    .weekly-calendar {
+        --hour-height: 40px;
+    }
+}

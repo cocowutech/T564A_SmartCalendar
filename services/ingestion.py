@@ -200,6 +200,120 @@ class IcsIngestionService:
             "results": results,
         }
 
+    async def ingest_outlook(self, payload: dict, *, settings: Settings) -> dict:
+        """
+        Fetch Outlook Calendar events but do NOT sync to Google Calendar.
+
+        Outlook events are kept separate and merged with Google Calendar events
+        in the frontend only. This prevents Outlook events from cluttering
+        Google Calendar while still allowing them to be displayed in the UI.
+        """
+        _ = payload
+        app_config = settings.load_app_config()
+
+        # Check for Outlook ICS URL in config
+        outlook_sources = [s for s in (app_config.ics_sources or []) if 'outlook' in s.name.lower()]
+
+        if not outlook_sources:
+            return {
+                "handled": False,
+                "reason": "No Outlook calendar configured. Please add Outlook ICS URL to app_config.yaml"
+            }
+
+        # Just verify Outlook sources are accessible, don't sync to Google Calendar
+        total_events = 0
+        errors = []
+
+        for source in outlook_sources:
+            try:
+                result = await self._fetch_outlook_events(
+                    url=str(source.url),
+                    source_name=source.name,
+                )
+                if result.get("handled"):
+                    total_events += result.get("events_count", 0)
+            except Exception as e:
+                errors.append(f"{source.name}: {str(e)}")
+
+        return {
+            "handled": True,
+            "events_count": total_events,
+            "sources_processed": len(outlook_sources),
+            "errors": errors if errors else None,
+            "note": "Outlook events are NOT synced to Google Calendar - they are displayed in UI only"
+        }
+
+    async def fetch_outlook_events_for_display(self, *, settings: Settings) -> list[dict]:
+        """
+        Fetch Outlook events directly from ICS feeds for display in the UI.
+        These events are NOT stored in Google Calendar.
+        """
+        app_config = settings.load_app_config()
+        outlook_sources = [s for s in (app_config.ics_sources or []) if 'outlook' in s.name.lower()]
+
+        all_events = []
+        timezone = self._get_timezone(settings.timezone)
+
+        for source in outlook_sources:
+            try:
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(str(source.url))
+                    response.raise_for_status()
+
+                calendar = Calendar.from_ical(response.content)
+
+                for component in calendar.walk():
+                    if component.name != "VEVENT":
+                        continue
+
+                    try:
+                        payload = self._build_event_payload(component, timezone)
+
+                        # Format event for frontend (similar to Google Calendar format)
+                        event = {
+                            'id': f"outlook-{source.name.lower().replace(' ', '-')}-{payload['uid']}",
+                            'title': payload['summary'],
+                            'source': source.name,  # "Outlook"
+                            'description': payload.get('description'),
+                            'location': payload.get('location'),
+                            'start': payload['start'].isoformat(),
+                            'end': payload['end'].isoformat(),
+                            'allDay': payload['all_day'],
+                        }
+                        all_events.append(event)
+                    except ValueError:
+                        continue
+
+            except Exception as exc:
+                logger.warning(f"Failed to fetch Outlook events from {source.name}: {exc}")
+                continue
+
+        return all_events
+
+    async def _fetch_outlook_events(self, *, url: str, source_name: str) -> dict:
+        """Fetch and parse Outlook ICS data without syncing to Google Calendar."""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.exception("Failed to fetch Outlook ICS feed", extra={"url": url})
+            return {"handled": False, "source": source_name, "error": str(exc)}
+
+        try:
+            calendar = Calendar.from_ical(response.content)
+        except Exception as exc:
+            logger.exception("Failed to parse ICS feed", extra={"url": url})
+            return {"handled": False, "source": source_name, "error": f"Invalid ICS data: {exc}"}
+
+        event_count = sum(1 for component in calendar.walk() if component.name == "VEVENT")
+
+        return {
+            "handled": True,
+            "source": source_name,
+            "events_count": event_count,
+        }
+
     async def _ingest_ics_url(
         self,
         *,

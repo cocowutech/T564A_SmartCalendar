@@ -190,7 +190,14 @@ function parseEvent(raw) {
     let allDay = false;
 
     if (raw.start) {
-        start = new Date(raw.start);
+        // Check if it's a date-only string (all-day event) like "2025-11-21"
+        if (raw.start.match(/^\d{4}-\d{2}-\d{2}$/) && raw.allDay) {
+            // Parse as local date to avoid timezone shift
+            const parts = raw.start.split('-');
+            start = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        } else {
+            start = new Date(raw.start);
+        }
         if (Number.isNaN(start.getTime())) {
             start = null;
         }
@@ -202,7 +209,14 @@ function parseEvent(raw) {
     }
 
     if (raw.end) {
-        end = new Date(raw.end);
+        // Check if it's a date-only string (all-day event)
+        if (raw.end.match(/^\d{4}-\d{2}-\d{2}$/) && raw.allDay) {
+            // Parse as local date to avoid timezone shift
+            const parts = raw.end.split('-');
+            end = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        } else {
+            end = new Date(raw.end);
+        }
         if (Number.isNaN(end.getTime())) {
             end = null;
         }
@@ -1035,6 +1049,28 @@ async function ingestIcs(evt) {
         await loadRealEvents();
     } catch (error) {
         showToast('ingestResult', `ICS sync failed: ${error.message}`, true);
+    } finally {
+        if (btn) {
+            btn.classList.remove('loading');
+            btn.disabled = false;
+        }
+    }
+}
+
+async function ingestOutlook(evt) {
+    const btn = evt?.target;
+    if (btn) {
+        btn.classList.add('loading');
+        btn.disabled = true;
+    }
+
+    try {
+        const result = await apiCall('/ingest/outlook', {});
+        summarizeSyncResult('Outlook', result);
+        updateLastSync();
+        await loadRealEvents();
+    } catch (error) {
+        showToast('ingestResult', `Outlook sync failed: ${error.message}`, true);
     } finally {
         if (btn) {
             btn.classList.remove('loading');

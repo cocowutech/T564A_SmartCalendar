@@ -27,9 +27,9 @@ async def get_events(
     ics_service: IcsIngestionService = Depends(IcsIngestionService),
 ) -> dict:
     """
-    Get events from Google Calendar AND Canvas for display in UI.
-    
-    Canvas events are fetched directly from ICS feeds (not from Google Calendar)
+    Get events from Google Calendar, Canvas, and Outlook for display in UI.
+
+    Canvas and Outlook events are fetched directly from ICS feeds (not from Google Calendar)
     and merged with Google Calendar events in the response.
     """
     now = datetime.utcnow()
@@ -41,13 +41,16 @@ async def get_events(
         time_max=now + timedelta(days=365),
         max_results=500
     )
-    
+
     # Fetch Canvas events directly (not from Google Calendar)
     canvas_events = await ics_service.fetch_canvas_events_for_display(settings=settings)
-    
-    # Merge events, with Canvas events kept separate
-    all_events = google_events + canvas_events
-    
+
+    # Fetch Outlook events directly (not from Google Calendar)
+    outlook_events = await ics_service.fetch_outlook_events_for_display(settings=settings)
+
+    # Merge all events
+    all_events = google_events + canvas_events + outlook_events
+
     return {"status": "ok", "events": all_events}
 
 
@@ -80,6 +83,23 @@ async def ingest_ics(
     service: IcsIngestionService = Depends(IcsIngestionService),
 ) -> dict:
     result = await service.ingest_generic(payload, settings=settings)
+    return {"status": "ok", "summary": result}
+
+
+@router.post("/ingest/outlook")
+async def ingest_outlook(
+    payload: dict,
+    settings: Settings = Depends(get_settings),
+    service: IcsIngestionService = Depends(IcsIngestionService),
+) -> dict:
+    """
+    Ingest Outlook Calendar events.
+
+    This endpoint supports two methods:
+    1. ICS URL from Outlook.com (read-only)
+    2. Microsoft Graph API (full two-way sync) - requires setup
+    """
+    result = await service.ingest_outlook(payload, settings=settings)
     return {"status": "ok", "summary": result}
 
 
