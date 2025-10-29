@@ -278,3 +278,4 @@ The **Week/Month** toggle buttons are now hidden from the header.
 
 The calendar is now much more intuitive and aware of the present moment! 🎉
 
+

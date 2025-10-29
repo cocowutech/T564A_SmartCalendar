@@ -157,3 +157,4 @@ const height = Math.max((clampedEnd - clampedStart) * (HOUR_HEIGHT / 60), 24);
    - MIT Canvas (purple)
    - All should render consistently
 
+

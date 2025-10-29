@@ -186,3 +186,4 @@ Or:
 ✅ **No Clutter** - Time grid only shows time-specific events
 ✅ **Responsive** - Banner only appears when needed
 
+

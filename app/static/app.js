@@ -21,6 +21,13 @@ let courseFilters = new Set(); // Enabled courses
 let allCourses = []; // All available courses
 let activeDayFilters = new Set([0, 1, 2, 3, 4, 5, 6]); // All days active by default (Mon=0, Sun=6)
 let currentView = 'grid'; // 'grid' or 'simple'
+let academicCalendarPresets = {
+    termName: null,
+    termEndDate: null,
+    holidays: [],
+};
+let recurrenceExceptions = [];
+let editingEventContext = null;
 
 // ---------------------------------------------------------------------------
 // Fetch helpers & notifications
@@ -258,6 +265,9 @@ function parseEvent(raw) {
         title = sourceMatch[2] || title;
     }
 
+    const metadata = raw.metadata || {};
+    const extendedProperties = raw.extendedProperties || null;
+
     return {
         id: raw.id || `${start.toISOString()}-${title}`,
         title,
@@ -267,6 +277,8 @@ function parseEvent(raw) {
         start,
         end,
         allDay,
+        metadata,
+        extendedProperties,
     };
 }
 
@@ -440,11 +452,27 @@ function renderWeekView() {
             // Determine if event is from Canvas (protected from deletion)
             const eventSource = event.source || 'Google';
             const isCanvasEvent = eventSource.includes('Canvas');
+            const isSmartSeries = Boolean(event.metadata && event.metadata.smartSeriesParent);
+            const isManualSmart = Boolean(event.metadata && event.metadata.smartSeriesOrigin === 'manual_activity');
+
+            if (isSmartSeries) {
+                card.classList.add('smart-series');
+            }
+            if (isManualSmart || eventSource === 'Smart Calendar') {
+                card.classList.add('manual-event');
+            }
 
             // For short events (< 40px height), only show title
             const isShort = height < 40;
             
             card.innerHTML = `
+                ${isSmartSeries ? `
+                    <button class="event-edit-btn"
+                            data-event-id="${event.id}"
+                            title="Edit recurring event"
+                            aria-label="Edit recurring event">
+                        ✎
+                    </button>` : ''}
                 <button class="event-delete-btn ${isCanvasEvent ? 'protected' : ''}"
                         data-event-id="${event.id}"
                         data-event-title="${escapeHtml(event.title)}"
@@ -470,9 +498,19 @@ function renderWeekView() {
                 });
             }
 
+            if (isSmartSeries) {
+                const editBtn = card.querySelector('.event-edit-btn');
+                if (editBtn) {
+                    editBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        openEditEventModal(event);
+                    });
+                }
+            }
+
             card.addEventListener('click', (e) => {
                 // Don't trigger if clicking delete button
-                if (!e.target.classList.contains('event-delete-btn')) {
+                if (!e.target.classList.contains('event-delete-btn') && !e.target.classList.contains('event-edit-btn')) {
                     selectedDate = new Date(event.start);
                     updateSelectedDayEvents();
                     renderWeekView();
@@ -1242,6 +1280,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     renderTimeColumn();
     checkApiStatus();
     initVoiceRecognition();
+    await loadAcademicCalendarPresets();
+    initializeRepeatControls();
     
     // Try to load cached events first (instant display)
     const cachedEvents = loadEventsFromCache();
@@ -1484,10 +1524,11 @@ function updateAllDayEvents() {
         bannerContainer.innerHTML = sortedEvents.map(ev => {
             const dayOfWeek = (ev.start.getDay() + 6) % 7;
             const dayName = DAY_NAMES[dayOfWeek];
+            const fullTitle = `${escapeHtml(ev.title)}\n${ev.start.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}`;
             return `
-                <div class="all-day-event-card" title="${escapeHtml(ev.title)}\n${ev.start.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}">
+                <div class="all-day-event-card">
                     <span class="event-date">${dayName}<br>${ev.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
-                    <span class="event-title">${escapeHtml(ev.title)}</span>
+                    <span class="event-title" title="${fullTitle}">${escapeHtml(ev.title)}</span>
                 </div>
             `;
         }).join('');
@@ -1546,12 +1587,17 @@ function showAddEventModal() {
     document.getElementById('eventAllDay').checked = false;
     document.getElementById('timeFields').style.display = 'grid';
     
+    resetRecurrenceForm(dateToUse);
+    handleRepeatFrequencyChange();
+    handleRepeatUntilTypeChange();
+    
     // Focus title field
     setTimeout(() => document.getElementById('eventTitle').focus(), 100);
 }
 
 function hideAddEventModal() {
     document.getElementById('addEventModal').style.display = 'none';
+    resetRecurrenceForm();
 }
 
 function toggleEventTime() {
@@ -1559,6 +1605,629 @@ function toggleEventTime() {
     document.getElementById('timeFields').style.display = isAllDay ? 'none' : 'grid';
 }
 
+async function loadAcademicCalendarPresets() {
+    try {
+        const response = await fetch(`${API_BASE}/calendar/presets`, {
+            method: 'GET',
+        });
+        const data = await response.json();
+        if (response.ok && data.status === 'ok') {
+            academicCalendarPresets = {
+                termName: data.presets.term_name || null,
+                termEndDate: data.presets.term_end_date || null,
+                holidays: Array.isArray(data.presets.holidays) ? data.presets.holidays : [],
+            };
+            populateHolidayPresets();
+        } else {
+            console.warn('Failed to load academic calendar presets', data);
+        }
+    } catch (error) {
+        console.warn('Academic calendar presets unavailable', error);
+    }
+}
+
+function initializeRepeatControls() {
+    const dayButtons = document.querySelectorAll('.repeat-day-toggle');
+    dayButtons.forEach((button) => {
+        button.addEventListener('click', () => {
+            button.classList.toggle('active');
+        });
+    });
+
+    const frequencySelect = document.getElementById('repeatFrequency');
+    if (frequencySelect) {
+        frequencySelect.addEventListener('change', handleRepeatFrequencyChange);
+    }
+
+    renderExceptionChips();
+    populateHolidayPresets();
+    handleRepeatFrequencyChange();
+    handleRepeatUntilTypeChange();
+}
+
+function toggleRepeatOptions(event) {
+    const enabled = event.target.checked;
+    const container = document.getElementById('repeatOptions');
+    if (!container) return;
+    container.style.display = enabled ? 'grid' : 'none';
+
+    if (enabled) {
+        const dateInput = document.getElementById('eventDate');
+        const referenceDate = dateInput && dateInput.value ? new Date(`${dateInput.value}T00:00:00`) : new Date();
+        if (!document.querySelector('.repeat-day-toggle.active')) {
+            setRepeatDefaults(referenceDate);
+        }
+        handleRepeatFrequencyChange();
+        handleRepeatUntilTypeChange();
+    }
+}
+
+function handleRepeatFrequencyChange() {
+    const frequency = document.getElementById('repeatFrequency')?.value || 'weekly';
+    const dayRow = document.getElementById('repeatDayPickerRow');
+    const intervalInput = document.getElementById('repeatInterval');
+    if (!dayRow) return;
+
+    if (intervalInput) {
+        if (frequency === 'biweekly') {
+            intervalInput.value = 1;
+            intervalInput.disabled = true;
+        } else {
+            intervalInput.disabled = false;
+        }
+    }
+
+    if (frequency === 'weekly' || frequency === 'biweekly') {
+        dayRow.style.display = 'grid';
+    } else {
+        dayRow.style.display = 'none';
+    }
+}
+
+function setRepeatDefaults(referenceDate) {
+    const buttons = document.querySelectorAll('.repeat-day-toggle');
+    buttons.forEach(btn => btn.classList.remove('active'));
+
+    if (referenceDate instanceof Date && !Number.isNaN(referenceDate.getTime())) {
+        const dayTokens = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+        const token = dayTokens[referenceDate.getDay()];
+        const defaultButton = document.querySelector(`.repeat-day-toggle[data-day="${token}"]`);
+        if (defaultButton) {
+            defaultButton.classList.add('active');
+        }
+
+        const defaultUntil = new Date(referenceDate);
+        defaultUntil.setMonth(defaultUntil.getMonth() + 1);
+        const untilInput = document.getElementById('repeatUntilDate');
+        if (untilInput && !academicCalendarPresets.termEndDate) {
+            untilInput.value = toLocalISODate(defaultUntil);
+        }
+    }
+
+    if (academicCalendarPresets.termEndDate) {
+        const untilInput = document.getElementById('repeatUntilDate');
+        if (untilInput && !untilInput.value) {
+            untilInput.value = academicCalendarPresets.termEndDate;
+        }
+    }
+}
+
+function handleRepeatUntilTypeChange() {
+    const select = document.getElementById('repeatUntilType');
+    const dateInput = document.getElementById('repeatUntilDate');
+    if (!select || !dateInput) return;
+
+    if (select.value === 'end_of_semester') {
+        dateInput.disabled = true;
+        if (academicCalendarPresets.termEndDate) {
+            dateInput.value = academicCalendarPresets.termEndDate;
+        }
+    } else {
+        dateInput.disabled = false;
+        if (!dateInput.value && academicCalendarPresets.termEndDate) {
+            dateInput.value = academicCalendarPresets.termEndDate;
+        }
+    }
+}
+
+function populateHolidayPresets() {
+    const select = document.getElementById('exceptionPresetSelect');
+    if (!select) return;
+
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = 'Add holiday...';
+    defaultOption.selected = true;
+
+    const fragment = document.createDocumentFragment();
+    fragment.appendChild(defaultOption);
+
+    if (Array.isArray(academicCalendarPresets.holidays)) {
+        academicCalendarPresets.holidays.forEach((holiday, index) => {
+            const startLabel = formatDateForLabel(holiday.start);
+            const endLabel = holiday.end && holiday.end !== holiday.start ? formatDateForLabel(holiday.end) : null;
+            const option = document.createElement('option');
+            option.value = String(index);
+            option.textContent = endLabel ? `${holiday.name} (${startLabel} – ${endLabel})` : `${holiday.name} (${startLabel})`;
+            fragment.appendChild(option);
+        });
+    }
+
+    select.innerHTML = '';
+    select.appendChild(fragment);
+}
+
+function handleExceptionPresetChange(value) {
+    if (value === '') return;
+    const index = parseInt(value, 10);
+    if (Number.isNaN(index)) return;
+    const holiday = academicCalendarPresets.holidays[index];
+    if (!holiday) return;
+
+    addException({
+        start: holiday.start,
+        end: holiday.end || holiday.start,
+        label: holiday.name,
+        source: 'holiday',
+    });
+
+    document.getElementById('exceptionPresetSelect').value = '';
+}
+
+function addManualException() {
+    const start = document.getElementById('exceptionStartDate')?.value;
+    const end = document.getElementById('exceptionEndDate')?.value;
+
+    if (!start) {
+        showToast('voiceResult', 'Select a start date to skip.', true);
+        return;
+    }
+
+    if (end && end < start) {
+        showToast('voiceResult', 'Skip end date must be after the start date.', true);
+        return;
+    }
+
+    const label = end && end !== start
+        ? `${formatDateForLabel(start)} – ${formatDateForLabel(end)}`
+        : `${formatDateForLabel(start)}`;
+
+    addException({
+        start,
+        end: end || start,
+        label,
+        source: 'manual',
+    });
+
+    document.getElementById('exceptionStartDate').value = '';
+    document.getElementById('exceptionEndDate').value = '';
+}
+
+function addException(exception) {
+    if (!exception || !exception.start) {
+        return;
+    }
+
+    const duplicate = recurrenceExceptions.some(
+        existing => existing.start === exception.start && (existing.end || existing.start) === (exception.end || exception.start),
+    );
+    if (duplicate) {
+        showToast('voiceResult', 'That skip is already listed.', true);
+        return;
+    }
+
+    recurrenceExceptions.push({
+        id: `exc-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+        ...exception,
+    });
+    renderExceptionChips();
+}
+
+function removeException(id) {
+    recurrenceExceptions = recurrenceExceptions.filter(exception => exception.id !== id);
+    renderExceptionChips();
+}
+
+function renderExceptionChips() {
+    const container = document.getElementById('exceptionList');
+    if (!container) return;
+
+    if (!recurrenceExceptions.length) {
+        container.innerHTML = '<span class="exception-placeholder">No skipped weeks or days yet.</span>';
+        return;
+    }
+
+    container.innerHTML = '';
+    recurrenceExceptions.forEach((exception) => {
+        const chip = document.createElement('span');
+        chip.className = 'exception-chip';
+        const label = document.createElement('span');
+        label.textContent = exception.label;
+        chip.appendChild(label);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'chip-remove';
+        removeBtn.type = 'button';
+        removeBtn.setAttribute('aria-label', `Remove exception ${exception.label}`);
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', () => removeException(exception.id));
+        chip.appendChild(removeBtn);
+
+        container.appendChild(chip);
+    });
+}
+
+function createDateFromISODate(isoString) {
+    if (!isoString || typeof isoString !== 'string') return null;
+    const parts = isoString.split('-').map(part => parseInt(part, 10));
+    if (parts.length !== 3 || parts.some(Number.isNaN)) {
+        return null;
+    }
+    const [year, month, day] = parts;
+    return new Date(year, month - 1, day);
+}
+
+function toLocalISODate(dateObj) {
+    if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) {
+        return '';
+    }
+    const year = dateObj.getFullYear();
+    const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+    const day = String(dateObj.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function formatDateForLabel(input) {
+    if (!input) return '';
+    const dateObj = createDateFromISODate(input);
+    if (!dateObj || Number.isNaN(dateObj.getTime())) {
+        return input;
+    }
+    return dateObj.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function resetRecurrenceForm(referenceDate = null) {
+    const toggle = document.getElementById('eventRepeatToggle');
+    if (toggle) {
+        toggle.checked = false;
+    }
+
+    const container = document.getElementById('repeatOptions');
+    if (container) {
+        container.style.display = 'none';
+    }
+
+    const intervalInput = document.getElementById('repeatInterval');
+    if (intervalInput) {
+        intervalInput.value = 1;
+        intervalInput.disabled = false;
+    }
+
+    const frequencySelect = document.getElementById('repeatFrequency');
+    if (frequencySelect) {
+        frequencySelect.value = 'weekly';
+    }
+
+    const untilType = document.getElementById('repeatUntilType');
+    if (untilType) {
+        untilType.value = 'date';
+    }
+
+    const untilDate = document.getElementById('repeatUntilDate');
+    if (untilDate) {
+        untilDate.disabled = false;
+        untilDate.value = '';
+    }
+
+    recurrenceExceptions = [];
+    renderExceptionChips();
+
+    document.querySelectorAll('.repeat-day-toggle').forEach(btn => btn.classList.remove('active'));
+
+    if (referenceDate) {
+        setRepeatDefaults(referenceDate);
+    }
+}
+
+function openEditEventModal(event) {
+    if (!event) return;
+    editingEventContext = {
+        id: event.id,
+        title: event.title,
+        location: event.location || '',
+        description: event.description || '',
+        start: new Date(event.start),
+        end: new Date(event.end),
+        allDay: event.allDay,
+        metadata: event.metadata || {},
+    };
+
+    const modal = document.getElementById('editEventModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+
+    document.getElementById('editEventTitle').value = event.title;
+    document.getElementById('editEventLocation').value = event.location || '';
+    document.getElementById('editEventDescription').value = event.description || '';
+    document.getElementById('editEventDate').value = toLocalISODate(editingEventContext.start);
+    const startInput = document.getElementById('editEventStart');
+    const endInput = document.getElementById('editEventEnd');
+    if (startInput) {
+        startInput.value = formatTimeForInput(editingEventContext.start);
+        startInput.disabled = editingEventContext.allDay;
+    }
+    if (endInput) {
+        endInput.value = formatTimeForInput(editingEventContext.end);
+        endInput.disabled = editingEventContext.allDay;
+    }
+
+    const singleScope = document.querySelector('input[name="editScope"][value="single"]');
+    const futureScope = document.querySelector('input[name="editScope"][value="future"]');
+    if (singleScope) {
+        singleScope.checked = true;
+    }
+    if (futureScope) {
+        const hasSeriesParent = Boolean(event.metadata && event.metadata.smartSeriesParent);
+        futureScope.disabled = !hasSeriesParent;
+        if (!hasSeriesParent) {
+            futureScope.checked = false;
+        }
+    }
+
+    const seriesInfo = document.getElementById('editSeriesContext');
+    if (seriesInfo) {
+        if (event.metadata && event.metadata.smartSeriesParent) {
+            seriesInfo.textContent = `Series ID: ${event.metadata.smartSeriesParent}`;
+            seriesInfo.style.display = 'block';
+        } else {
+            seriesInfo.style.display = 'none';
+        }
+    }
+
+    setTimeout(() => document.getElementById('editEventTitle').focus(), 100);
+}
+
+function closeEditEventModal() {
+    const modal = document.getElementById('editEventModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    editingEventContext = null;
+}
+
+function formatTimeForInput(dateObj) {
+    if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) {
+        return '00:00';
+    }
+    const hours = String(dateObj.getHours()).padStart(2, '0');
+    const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+    return `${hours}:${minutes}`;
+}
+
+function combineDateAndTime(dateObj, timeValue) {
+    if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) {
+        return null;
+    }
+    if (!timeValue || typeof timeValue !== 'string' || !timeValue.includes(':')) {
+        return null;
+    }
+    const [hoursStr, minutesStr] = timeValue.split(':');
+    const hours = parseInt(hoursStr, 10);
+    const minutes = parseInt(minutesStr, 10);
+    if (Number.isNaN(hours) || Number.isNaN(minutes)) {
+        return null;
+    }
+    const combined = new Date(dateObj);
+    combined.setHours(hours, minutes, 0, 0);
+    return combined;
+}
+
+async function submitEditEvent() {
+    if (!editingEventContext) {
+        return;
+    }
+
+    const title = document.getElementById('editEventTitle').value.trim();
+    const location = document.getElementById('editEventLocation').value.trim();
+    const description = document.getElementById('editEventDescription').value.trim();
+    const startTimeInput = document.getElementById('editEventStart');
+    const endTimeInput = document.getElementById('editEventEnd');
+    const startTimeValue = startTimeInput ? startTimeInput.value : '';
+    const endTimeValue = endTimeInput ? endTimeInput.value : '';
+    const scope = document.querySelector('input[name="editScope"]:checked')?.value || 'single';
+
+    if (!title) {
+        showToast('ingestResult', 'Please provide a title for the event.', true);
+        return;
+    }
+
+    let startDateTime = editingEventContext.start;
+    let endDateTime = editingEventContext.end;
+
+    if (!editingEventContext.allDay) {
+        if (!startTimeValue || !endTimeValue) {
+            showToast('ingestResult', 'Start and end times are required.', true);
+            return;
+        }
+
+        startDateTime = combineDateAndTime(editingEventContext.start, startTimeValue);
+        endDateTime = combineDateAndTime(editingEventContext.start, endTimeValue);
+
+        if (!startDateTime || !endDateTime) {
+            showToast('ingestResult', 'Unable to parse the provided times.', true);
+            return;
+        }
+
+        if (endDateTime <= startDateTime) {
+            showToast('ingestResult', 'End time must be after the start time.', true);
+            return;
+        }
+    }
+
+    const payload = {
+        event_id: editingEventContext.id,
+        scope,
+        summary: title,
+        location,
+        description,
+        start_time: startDateTime.toISOString(),
+        end_time: endDateTime.toISOString(),
+        all_day: editingEventContext.allDay,
+    };
+
+    const parentId = editingEventContext.metadata?.smartSeriesParent;
+    if (parentId) {
+        payload.series_parent_id = parentId;
+    }
+
+    if (scope === 'future') {
+        if (!parentId) {
+            showToast('ingestResult', 'This event is not part of a recurring series.', true);
+            return;
+        }
+        const futureEvents = events
+            .filter(ev => ev.metadata && ev.metadata.smartSeriesParent === parentId && ev.start >= editingEventContext.start)
+            .sort((a, b) => a.start - b.start);
+
+        if (!futureEvents.length) {
+            showToast('ingestResult', 'No future events found for this series.', true);
+            return;
+        }
+
+        payload.updates = futureEvents.map(ev => {
+            if (editingEventContext.allDay) {
+                return {
+                    event_id: ev.id,
+                    start_time: ev.start.toISOString(),
+                    end_time: ev.end.toISOString(),
+                };
+            }
+            const start = combineDateAndTime(ev.start, startTimeValue);
+            const end = combineDateAndTime(ev.start, endTimeValue);
+            return {
+                event_id: ev.id,
+                start_time: start ? start.toISOString() : null,
+                end_time: end ? end.toISOString() : null,
+            };
+        }).filter(update => update.start_time && update.end_time);
+
+        if (!payload.updates.length) {
+            showToast('ingestResult', 'Unable to build updates for future events.', true);
+            return;
+        }
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/events/update`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (response.ok && result.status === 'ok') {
+            const count = result.updated_count || 1;
+            showToast('ingestResult', `✅ Updated ${count} event${count > 1 ? 's' : ''}`, false);
+            closeEditEventModal();
+            await loadRealEvents();
+        } else {
+            throw new Error(result.error || 'Failed to update event');
+        }
+    } catch (error) {
+        console.error('Failed to update event', error);
+        showToast('ingestResult', `Failed to update event: ${error.message}`, true);
+    }
+}
+
+function getEventsForCurrentWeek() {
+    const weekDates = getWeekDates(selectedDate);
+    const weekStart = new Date(weekDates[0]);
+    weekStart.setHours(0, 0, 0, 0);
+    const weekEnd = new Date(weekDates[6]);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    return getFilteredEvents()
+        .filter(event => event.start >= weekStart && event.start <= weekEnd)
+        .sort((a, b) => a.start - b.start);
+}
+
+function printWeeklyCalendar() {
+    document.body.classList.add('print-week');
+
+    const finishPrint = () => {
+        document.body.classList.remove('print-week');
+        window.removeEventListener('afterprint', finishPrint);
+    };
+
+    window.addEventListener('afterprint', finishPrint);
+
+    requestAnimationFrame(() => {
+        window.print();
+        setTimeout(finishPrint, 1000);
+    });
+}
+
+function downloadWeekAsCSV() {
+    try {
+        const weekDates = getWeekDates(selectedDate);
+        const weekEvents = getEventsForCurrentWeek();
+
+        if (!weekEvents.length) {
+            showToast('ingestResult', 'No events scheduled this week to export.', true);
+            return;
+        }
+
+        const header = ['Day', 'Date', 'Start Time', 'End Time', 'Title', 'Location', 'Source', 'All Day'];
+        const rows = [header.join(',')];
+
+        weekEvents.forEach(event => {
+            const dayName = event.start.toLocaleDateString(undefined, { weekday: 'long' });
+            const dateStr = event.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+            const startTime = event.allDay ? 'All Day' : event.start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            const endTime = event.allDay ? '' : event.end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+            const location = event.location ? `"${event.location.replace(/"/g, '""')}"` : '';
+
+            const csvRow = [
+                dayName,
+                dateStr,
+                startTime,
+                endTime,
+                `"${event.title.replace(/"/g, '""')}"`,
+                location,
+                event.source || (event.metadata && event.metadata.smartSeriesOrigin === 'manual_activity' ? 'Smart Calendar' : ''),
+                event.allDay ? 'Yes' : 'No',
+            ];
+
+            rows.push(csvRow.join(','));
+        });
+
+        const csvContent = '\ufeff' + rows.join('\n');
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const weekRange = `${weekDates[0].toISOString().split('T')[0]}_to_${weekDates[6].toISOString().split('T')[0]}`;
+
+        const grid = document.querySelector('.week-grid');
+        const cleanup = () => {
+            if (grid) grid.classList.remove('exporting');
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        };
+
+        if (grid) grid.classList.add('exporting');
+
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `smart_calendar_week_${weekRange}.csv`;
+        document.body.appendChild(link);
+        link.click();
+
+        setTimeout(cleanup, 1000);
+
+        showToast('ingestResult', 'Weekly schedule exported to CSV (open in Excel).', false);
+    } catch (error) {
+        console.error('Failed to export week:', error);
+        showToast('ingestResult', `Failed to export: ${error.message}`, true);
+    }
+}
 async function submitManualEvent() {
     const title = document.getElementById('eventTitle').value.trim();
     const date = document.getElementById('eventDate').value;
@@ -1604,6 +2273,49 @@ async function submitManualEvent() {
             endDateTime = new Date(`${date}T${endTime}`);
         }
         
+        let recurrencePayload = null;
+        const repeatToggle = document.getElementById('eventRepeatToggle');
+        if (repeatToggle && repeatToggle.checked) {
+            const frequency = document.getElementById('repeatFrequency').value || 'weekly';
+            const intervalValue = parseInt(document.getElementById('repeatInterval').value, 10);
+            const interval = Number.isNaN(intervalValue) || intervalValue < 1 ? 1 : intervalValue;
+            const untilType = document.getElementById('repeatUntilType').value || 'date';
+            const untilDateValue = document.getElementById('repeatUntilDate').value;
+            const dayButtons = document.querySelectorAll('.repeat-day-toggle.active');
+            const daysOfWeek = Array.from(dayButtons).map(btn => btn.dataset.day);
+
+            if ((frequency === 'weekly' || frequency === 'biweekly') && daysOfWeek.length === 0) {
+                const dayTokens = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+                daysOfWeek.push(dayTokens[startDateTime.getDay()]);
+            }
+
+            if (untilType === 'date' && !untilDateValue) {
+                showToast('voiceResult', 'Please select a date to end the recurrence.', true);
+                return;
+            }
+
+            if (untilType === 'end_of_semester' && !academicCalendarPresets.termEndDate) {
+                showToast('voiceResult', 'Term end date is not configured. Choose a specific date instead.', true);
+                return;
+            }
+
+            recurrencePayload = {
+                enabled: true,
+                frequency,
+                interval,
+                daysOfWeek,
+                repeatUntilType: untilType,
+                repeatUntilDate: untilType === 'date' ? untilDateValue : (academicCalendarPresets.termEndDate || null),
+                repeat_until: untilType === 'date' ? untilDateValue : (academicCalendarPresets.termEndDate || null),
+                exceptions: recurrenceExceptions.map(exc => ({
+                    start: exc.start,
+                    end: exc.end,
+                    label: exc.label,
+                    source: exc.source,
+                })),
+            };
+        }
+        
         // Call Google Calendar API via backend
         const response = await fetch(`${API_BASE}/events/create`, {
             method: 'POST',
@@ -1614,14 +2326,19 @@ async function submitManualEvent() {
                 end_time: endDateTime.toISOString(),
                 location: location || null,
                 description: description || null,
-                all_day: isAllDay
+                all_day: isAllDay,
+                recurrence: recurrencePayload
             })
         });
         
         const result = await response.json();
         
         if (response.ok && result.status === 'ok') {
-            showToast('ingestResult', `✅ Event "${title}" created!`, false);
+            if (result.created_count) {
+                showToast('ingestResult', `✅ Created ${result.created_count} "${title}" sessions`, false);
+            } else {
+                showToast('ingestResult', `✅ Event "${title}" created!`, false);
+            }
             hideAddEventModal();
             
             // Refresh calendar to show new event

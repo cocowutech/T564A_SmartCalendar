@@ -82,3 +82,4 @@ Sample all-day events: ["Holiday Name", "Other Event", ...]
 
 If holidays aren't in this list, they're not being fetched from the configured calendar.
 
+

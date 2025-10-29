@@ -115,6 +115,8 @@ class GoogleCalendarService:
             start = event['start'].get('dateTime', event['start'].get('date'))
             end = event['end'].get('dateTime', event['end'].get('date'))
             title = event.get('summary', 'No Title')
+            extended_properties = event.get('extendedProperties', {})
+            private_props = extended_properties.get('private', {}) if extended_properties else {}
 
             # Detect event source from title prefix
             # Events synced from Canvas have [Canvas], [Harvard Canvas], [MIT Canvas] prefix
@@ -141,7 +143,13 @@ class GoogleCalendarService:
                 'start': start,
                 'end': end,
                 'source': source,
-                'allDay': 'date' in event['start']  # All-day events use 'date' instead of 'dateTime'
+                'allDay': 'date' in event['start'],  # All-day events use 'date' instead of 'dateTime'
+                'metadata': {
+                    'smartSeriesParent': private_props.get('smart_series_parent'),
+                    'smartSeriesOrigin': private_props.get('smart_series_origin'),
+                    'smartSeriesIndex': private_props.get('smart_series_index'),
+                },
+                'extendedProperties': extended_properties or None,
             })
 
         return formatted_events
@@ -157,6 +165,7 @@ class GoogleCalendarService:
         location: str | None = None,
         all_day: bool = False,
         attendees: list[dict] | None = None,
+        extended_properties: dict | None = None,
     ) -> dict:
         start = self._normalize_datetime(start_time, settings.timezone)
         end = self._normalize_datetime(end_time, settings.timezone)
@@ -184,6 +193,8 @@ class GoogleCalendarService:
             event['location'] = location
         if attendees:
             event['attendees'] = attendees
+        if extended_properties:
+            event['extendedProperties'] = extended_properties
 
         return event
 
@@ -212,6 +223,7 @@ class GoogleCalendarService:
         all_day: bool = False,
         attendees: list[dict] | None = None,
         event_id: str | None = None,
+        extended_properties: dict | None = None,
     ) -> dict:
         """Create a new event in Google Calendar."""
         service = self._get_calendar_service(settings)
@@ -224,6 +236,7 @@ class GoogleCalendarService:
             location=location,
             all_day=all_day,
             attendees=attendees,
+            extended_properties=extended_properties,
         )
 
         if event_id:
@@ -248,6 +261,7 @@ class GoogleCalendarService:
         all_day: bool = False,
         attendees: list[dict] | None = None,
         event_id: str | None = None,
+        extended_properties: dict | None = None,
     ) -> dict:
         """Create a calendar event or update an existing one when IDs collide."""
         service = self._get_calendar_service(settings)
@@ -260,6 +274,7 @@ class GoogleCalendarService:
             location=location,
             all_day=all_day,
             attendees=attendees,
+            extended_properties=extended_properties,
         )
 
         if event_id:
@@ -302,6 +317,14 @@ class GoogleCalendarService:
                 ).execute()
                 return {"action": "updated", "event": event}
             raise
+
+    async def get_event(self, settings: Settings, event_id: str) -> dict:
+        """Fetch a single event by ID."""
+        service = self._get_calendar_service(settings)
+        return service.events().get(
+            calendarId=settings.google_calendar_id,
+            eventId=event_id,
+        ).execute()
 
     async def delete_event(self, settings: Settings, event_id: str) -> dict:
         """Delete an event from Google Calendar."""

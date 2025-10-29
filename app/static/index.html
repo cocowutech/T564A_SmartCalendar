@@ -26,6 +26,12 @@
                 <button class="btn btn-secondary" onclick="loadRealEvents()">
                     <span class="icon">🔄</span> Refresh
                 </button>
+                <button class="btn btn-light" onclick="printWeeklyCalendar()">
+                    <span class="icon">🖨️</span> Print / PDF
+                </button>
+                <button class="btn btn-light" onclick="downloadWeekAsCSV()">
+                    <span class="icon">📥</span> Export Excel
+                </button>
                 <button class="btn btn-primary" onclick="showAddEventModal()">
                     <span class="icon">➕</span> Add Activity
                 </button>
@@ -230,10 +236,119 @@
                     <label for="eventDescription">Description</label>
                     <textarea id="eventDescription" rows="3" placeholder="Additional details..."></textarea>
                 </div>
+                <div class="form-divider"></div>
+                <div class="form-field repeat-toggle-row">
+                    <label class="toggle-inline">
+                        <input type="checkbox" id="eventRepeatToggle" onchange="toggleRepeatOptions(event)">
+                        <span>Repeat this activity</span>
+                    </label>
+                    <p class="hint">Create recurring sessions and skip holidays or break weeks.</p>
+                </div>
+                <div class="repeat-options" id="repeatOptions" style="display: none;">
+                    <div class="repeat-row">
+                        <label>Repeat every</label>
+                        <div class="repeat-frequency">
+                            <input type="number" id="repeatInterval" min="1" value="1">
+                            <select id="repeatFrequency">
+                                <option value="weekly">week</option>
+                                <option value="biweekly">2 weeks</option>
+                                <option value="daily">day</option>
+                                <option value="monthly">month</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="repeat-row" id="repeatDayPickerRow">
+                        <label>On</label>
+                        <div class="repeat-day-picker" id="repeatDayPicker">
+                            <button type="button" class="repeat-day-toggle" data-day="mon">Mon</button>
+                            <button type="button" class="repeat-day-toggle" data-day="tue">Tue</button>
+                            <button type="button" class="repeat-day-toggle" data-day="wed">Wed</button>
+                            <button type="button" class="repeat-day-toggle" data-day="thu">Thu</button>
+                            <button type="button" class="repeat-day-toggle" data-day="fri">Fri</button>
+                            <button type="button" class="repeat-day-toggle" data-day="sat">Sat</button>
+                            <button type="button" class="repeat-day-toggle" data-day="sun">Sun</button>
+                        </div>
+                    </div>
+                    <div class="repeat-row">
+                        <label>Until</label>
+                        <div class="repeat-until">
+                            <select id="repeatUntilType" onchange="handleRepeatUntilTypeChange()">
+                                <option value="date">Specific date</option>
+                                <option value="end_of_semester">End of semester</option>
+                            </select>
+                            <input type="date" id="repeatUntilDate">
+                        </div>
+                    </div>
+                    <div class="repeat-row">
+                        <label>Exceptions</label>
+                        <div class="repeat-exceptions">
+                            <div id="exceptionList" class="exception-chip-container" aria-live="polite"></div>
+                            <div class="exception-controls">
+                                <input type="date" id="exceptionStartDate" aria-label="Skip start date">
+                                <input type="date" id="exceptionEndDate" aria-label="Skip end date (optional)">
+                                <button type="button" class="btn btn-light" onclick="addManualException()">Skip</button>
+                            </div>
+                            <select id="exceptionPresetSelect" class="exception-presets" onchange="handleExceptionPresetChange(this.value)">
+                                <option value="">Add holiday...</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn btn-secondary" onclick="hideAddEventModal()">Cancel</button>
                 <button class="btn btn-primary" onclick="submitManualEvent()">Create Event</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal" id="editEventModal" style="display: none;">
+        <div class="modal-overlay" onclick="closeEditEventModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>✏️ Edit Activity</h2>
+                <button class="modal-close" onclick="closeEditEventModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-field">
+                    <label for="editEventTitle">Title</label>
+                    <input type="text" id="editEventTitle">
+                </div>
+                <div class="form-row">
+                    <div class="form-field">
+                        <label for="editEventDate">Date</label>
+                        <input type="date" id="editEventDate" disabled>
+                    </div>
+                    <div class="form-field">
+                        <label>Time</label>
+                        <div class="time-range">
+                            <input type="time" id="editEventStart">
+                            <span class="time-separator">to</span>
+                            <input type="time" id="editEventEnd">
+                        </div>
+                    </div>
+                </div>
+                <div class="form-field">
+                    <label for="editEventLocation">Location</label>
+                    <input type="text" id="editEventLocation" placeholder="Optional">
+                </div>
+                <div class="form-field">
+                    <label for="editEventDescription">Description</label>
+                    <textarea id="editEventDescription" rows="3" placeholder="Optional notes..."></textarea>
+                </div>
+                <div class="form-field">
+                    <label>Apply changes to</label>
+                    <div class="scope-options">
+                        <label><input type="radio" name="editScope" value="single" checked> This event only</label>
+                        <label><input type="radio" name="editScope" value="future"> This and future events</label>
+                    </div>
+                    <p class="hint">Future updates apply to every later session in this series.</p>
+                    <p class="hint series-context" id="editSeriesContext" style="display: none;"></p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeEditEventModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="submitEditEvent()">Save Changes</button>
             </div>
         </div>
     </div>

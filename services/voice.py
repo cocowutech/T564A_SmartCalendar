@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 from core.config import Settings
 from services.google_calendar import GoogleCalendarService
+from services.ingestion import IcsIngestionService
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class VoiceService:
 
     def __init__(self):
         self.calendar_service = GoogleCalendarService()
+        self.ics_service = IcsIngestionService()
         self._pending_proposals = {}  # Store proposals for confirmation
 
     async def add_recurring(self, payload: dict, *, settings: Settings) -> dict:
@@ -239,11 +241,156 @@ Return ONLY valid JSON, no explanations."""
             if not all(k in parsed for k in required):
                 return {"success": False, "error": f"Missing required fields: {required}"}
 
+            # Normalize count to at least 1
+            try:
+                parsed['count'] = max(1, int(parsed.get('count', 1)))
+            except (TypeError, ValueError):
+                parsed['count'] = 1
+
+            # Ensure duration is a positive integer; fall back to 60 minutes if missing
+            try:
+                duration = int(parsed.get('duration_minutes') or 0)
+            except (TypeError, ValueError):
+                duration = 0
+
+            if duration <= 0:
+                logger.warning("Duration missing or invalid in parsed result; defaulting to 60 minutes.")
+                duration = 60
+
+            parsed['duration_minutes'] = duration
+
+            # Apply heuristic overrides for explicit user instructions
+            normalized_input = user_input.lower()
+            inferred_range = self._infer_time_range(normalized_input)
+            if inferred_range:
+                parsed['time_range'] = inferred_range
+            elif 'time_range' not in parsed:
+                parsed['time_range'] = 'this_week'
+
+            parsed['count'] = self._infer_count(normalized_input, parsed['count'])
+
             return parsed
 
         except Exception as e:
             logger.error(f"LLM parsing failed: {e}")
             return {"success": False, "error": f"Failed to parse request: {str(e)}"}
+
+    def _infer_time_range(self, normalized_input: str) -> str | None:
+        """
+        Infer an explicit time range if the user used clear keywords.
+
+        This nudges the LLM output toward deterministic windows for phrases such as
+        "tomorrow" or "next week".
+        """
+        keyword_map = [
+            ('tomorrow', 'tomorrow'),
+            ('tonight', 'tonight'),
+            ('this evening', 'tonight'),
+            ('later tonight', 'tonight'),
+            ('this weekend', 'this_weekend'),
+            ('over the weekend', 'this_weekend'),
+            ('next weekend', 'next_weekend'),
+            ('next week', 'next_week'),
+            ('this week', 'this_week'),
+            ('next few days', 'next_3_days'),
+            ('next couple of days', 'next_3_days'),
+            ('in the next 3 days', 'next_3_days'),
+            ('today', 'today'),
+        ]
+
+        for phrase, value in keyword_map:
+            if phrase in normalized_input:
+                if value == 'next_weekend':
+                    return 'next_weekend'
+                return value
+
+        return None
+
+    def _infer_count(self, normalized_input: str, current_count: int) -> int:
+        """
+        Enforce the number of repetitions based on clear textual phrases.
+
+        The LLM usually captures this, but we provide deterministic fallbacks so that
+        phrases like "three times" or "twice" always map to the expected count.
+        """
+        # Patterns like "3 times", "2x", etc.
+        import re
+
+        digit_match = re.search(r'(\d+)\s*(x|times|sessions|occurrences|events)', normalized_input)
+        if digit_match:
+            try:
+                value = int(digit_match.group(1))
+                if value > 0:
+                    current_count = max(current_count, value)
+            except ValueError:
+                pass
+
+        # Word-based numbers
+        word_map = {
+            'once': 1,
+            'one time': 1,
+            'twice': 2,
+            'thrice': 3,
+            'three times': 3,
+            'four times': 4,
+            'five times': 5,
+        }
+
+        for phrase, value in word_map.items():
+            if phrase in normalized_input:
+                current_count = max(current_count, value)
+
+        return max(1, current_count)
+
+    def _filter_events_in_window(
+        self,
+        events: list[dict],
+        *,
+        timezone: ZoneInfo,
+        window_start: datetime,
+        window_end: datetime,
+    ) -> list[dict]:
+        """
+        Keep only events that intersect the requested scheduling window and
+        normalize their timestamps to ISO strings with timezone info.
+        """
+        from dateutil import parser as date_parser
+
+        filtered: list[dict] = []
+
+        for event in events:
+            start_str = event.get('start')
+            end_str = event.get('end')
+
+            if not start_str or not end_str:
+                continue
+
+            try:
+                start_dt = date_parser.isoparse(start_str) if isinstance(start_str, str) else start_str
+                end_dt = date_parser.isoparse(end_str) if isinstance(end_str, str) else end_str
+            except Exception as exc:
+                logger.debug(f"Skipping event with unparsable times: {exc}")
+                continue
+
+            if start_dt.tzinfo is None:
+                start_dt = start_dt.replace(tzinfo=timezone)
+            else:
+                start_dt = start_dt.astimezone(timezone)
+
+            if end_dt.tzinfo is None:
+                end_dt = end_dt.replace(tzinfo=timezone)
+            else:
+                end_dt = end_dt.astimezone(timezone)
+
+            if end_dt <= window_start or start_dt >= window_end:
+                continue
+
+            normalized = dict(event)
+            normalized['start'] = start_dt.isoformat()
+            normalized['end'] = end_dt.isoformat()
+            filtered.append(normalized)
+
+        return filtered
 
     async def _find_free_slots(self, parsed_request: dict, settings: Settings) -> list[dict]:
         """
@@ -269,22 +416,89 @@ Return ONLY valid JSON, no explanations."""
 
         # Determine search window
         now = datetime.now(ZoneInfo(settings.timezone))
-        if time_range == 'this_week':
-            end_date = now + timedelta(days=7)
+        search_start = now + timedelta(minutes=30)
+        end_date = now + timedelta(days=7)
+
+        if time_range == 'today':
+            end_date = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        elif time_range == 'tomorrow':
+            tomorrow_start = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            search_start = tomorrow_start
+            end_date = tomorrow_start.replace(hour=23, minute=59, second=59, microsecond=0)
+        elif time_range == 'tonight':
+            evening_start = now.replace(hour=18, minute=0, second=0, microsecond=0)
+            if evening_start <= now:
+                evening_start = now + timedelta(minutes=30)
+            search_start = evening_start
+            end_date = now.replace(hour=23, minute=59, second=59, microsecond=0)
+        elif time_range == 'next_week':
+            days_until_monday = (7 - now.weekday()) % 7 or 7
+            next_week_start = (now + timedelta(days=days_until_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+            search_start = next_week_start
+            end_date = next_week_start + timedelta(days=7)
+        elif time_range == 'this_weekend':
+            days_until_saturday = (5 - now.weekday()) % 7
+            weekend_start = (now + timedelta(days=days_until_saturday)).replace(hour=0, minute=0, second=0, microsecond=0)
+            search_start = weekend_start
+            end_date = weekend_start + timedelta(days=2)
+        elif time_range == 'next_weekend':
+            days_until_saturday = (5 - now.weekday()) % 7
+            weekend_start = (now + timedelta(days=days_until_saturday)).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=7)
+            search_start = weekend_start
+            end_date = weekend_start + timedelta(days=2)
         elif time_range == 'next_3_days':
             end_date = now + timedelta(days=3)
-        elif time_range == 'today':
-            end_date = now.replace(hour=23, minute=59)
+        elif time_range == 'this_week':
+            end_date = now + timedelta(days=7)
         else:
             end_date = now + timedelta(days=7)
 
-        # Get existing events
+        if search_start <= now:
+            search_start = now + timedelta(minutes=30)
+
+        if end_date <= search_start:
+            end_date = search_start + timedelta(hours=4)
+
+        # Get existing events across Google Calendar and connected ICS feeds
         existing_events = await self.calendar_service.list_events(
             settings=settings,
-            time_min=now,
+            time_min=min(now, search_start),
             time_max=end_date,
             max_results=500
         )
+
+        timezone_obj = now.tzinfo or ZoneInfo(settings.timezone)
+
+        supplemental_events: list[dict] = []
+
+        try:
+            canvas_events = await self.ics_service.fetch_canvas_events_for_display(settings=settings)
+            supplemental_events.extend(
+                self._filter_events_in_window(
+                    canvas_events,
+                    timezone=timezone_obj,
+                    window_start=search_start,
+                    window_end=end_date,
+                )
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to fetch Canvas events for conflict checks: {exc}")
+
+        try:
+            outlook_events = await self.ics_service.fetch_outlook_events_for_display(settings=settings)
+            supplemental_events.extend(
+                self._filter_events_in_window(
+                    outlook_events,
+                    timezone=timezone_obj,
+                    window_start=search_start,
+                    window_end=end_date,
+                )
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to fetch Outlook events for conflict checks: {exc}")
+
+        if supplemental_events:
+            existing_events.extend(supplemental_events)
 
         # Determine working hours based on preferred time
         if preferred_time == 'morning':
@@ -298,7 +512,10 @@ Return ONLY valid JSON, no explanations."""
 
         # Find candidate slots
         candidates = []
-        current = self._round_to_interval(now + timedelta(minutes=30), ROUND_TO_MINUTES)
+        current = self._round_to_interval(search_start, ROUND_TO_MINUTES)
+
+        if current < search_start:
+            current = search_start
 
         while current < end_date:
             # Skip if outside working hours

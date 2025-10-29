@@ -118,3 +118,4 @@ If you previously had Canvas events synced to Google Calendar:
 3. `app/static/app.js` - Sync feedback messages
 4. `app/static/styles.css` - Canvas event colors
 
+

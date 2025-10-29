@@ -1,6 +1,8 @@
 canvas_sources:
   - name: "Harvard Canvas"
     url: "https://canvas.harvard.edu/feeds/calendars/user_OtFYRvlM3UBCrdIXqkntOJerw5Jibi5UZ5IGhyYV.ics"
+  - name: "Harvard Business School Canvas"
+    url: "https://hbs.instructure.com/feeds/calendars/user_03CKmwa1f7Twza2acVYcZZuGYDB30tIj3eiOvTk1.ics"
   - name: "MIT Canvas"
     url: "https://canvas.mit.edu/feeds/calendars/user_Pt8P7SgOM54JioJ1QXYhjylaq9Jx33VJvUZwx8iA.ics"
 
@@ -27,3 +29,15 @@ selfcare:
 
 home:
   address: "Cambridge, MA"
+
+academic_calendar:
+  term_name: "Fall 2025"
+  term_start_date: "2025-09-01"
+  term_end_date: "2025-12-15"
+  holidays:
+    - name: "Thanksgiving Break"
+      start: "2025-11-25"
+      end: "2025-11-29"
+    - name: "Winter Break"
+      start: "2025-12-24"
+      end: "2026-01-01"
