@@ -12,6 +12,7 @@
             <div class="header-left">
                 <h1 class="app-title">Smart Calendar</h1>
                 <span class="term-label">Fall 2025</span>
+                <div class="user-location" id="userLocationInfo">📍 Loading your region...</div>
             </div>
             <div class="header-actions">
                 <!-- View Switcher -->
@@ -227,6 +228,11 @@
                         <label for="eventEndTime">End Time *</label>
                         <input type="time" id="eventEndTime" value="10:00">
                     </div>
+                </div>
+                <div class="form-field" id="eventTimezoneField">
+                    <label for="eventTimeZone">Event Time Zone</label>
+                    <select id="eventTimeZone"></select>
+                    <p class="hint" id="eventTimeConversion" aria-live="polite"></p>
                 </div>
                 <div class="form-field">
                     <label for="eventLocation">Location</label>

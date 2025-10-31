@@ -28,6 +28,229 @@ let academicCalendarPresets = {
 };
 let recurrenceExceptions = [];
 let editingEventContext = null;
+let timezoneUiInitialized = false;
+let locationBannerTimer = null;
+
+const DEFAULT_TIME_ZONES = [
+    'UTC',
+    'America/New_York',
+    'America/Chicago',
+    'America/Denver',
+    'America/Los_Angeles',
+    'America/Phoenix',
+    'America/Toronto',
+    'America/Vancouver',
+    'America/Sao_Paulo',
+    'Europe/London',
+    'Europe/Paris',
+    'Europe/Berlin',
+    'Europe/Madrid',
+    'Europe/Rome',
+    'Europe/Amsterdam',
+    'Asia/Shanghai',
+    'Asia/Hong_Kong',
+    'Asia/Tokyo',
+    'Asia/Seoul',
+    'Asia/Singapore',
+    'Asia/Kuala_Lumpur',
+    'Asia/Bangkok',
+    'Asia/Kolkata',
+    'Australia/Sydney'
+];
+
+const userTimeZone = (() => {
+    try {
+        return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+    } catch (err) {
+        console.warn('Unable to detect user timezone, defaulting to UTC', err);
+        return 'UTC';
+    }
+})();
+
+function getSupportedTimeZones() {
+    if (typeof Intl.supportedValuesOf === 'function') {
+        try {
+            const zones = Intl.supportedValuesOf('timeZone');
+            if (Array.isArray(zones) && zones.length) {
+                return zones;
+            }
+        } catch (err) {
+            console.warn('Intl.supportedValuesOf not supported for time zones', err);
+        }
+    }
+    return DEFAULT_TIME_ZONES;
+}
+
+function formatTimeZoneLabel(tz) {
+    if (!tz) return 'Unknown timezone';
+    try {
+        if (typeof Intl.DisplayNames === 'function') {
+            const locale = navigator.language || 'en';
+            const displayNames = new Intl.DisplayNames([locale], { type: 'timeZone' });
+            const friendly = displayNames.of(tz);
+            if (friendly && friendly !== tz) {
+                return `${friendly} (${tz})`;
+            }
+        }
+    } catch (err) {
+        console.warn('Unable to format timezone display name', err);
+    }
+    const parts = tz.split('/');
+    const displayName = parts[parts.length - 1].replace(/_/g, ' ');
+    return `${displayName} (${tz})`;
+}
+
+function updateUserLocationBanner() {
+    const banner = document.getElementById('userLocationInfo');
+    if (!banner) return;
+
+    const render = () => {
+        const display = formatTimeZoneLabel(userTimeZone);
+        const localTime = new Intl.DateTimeFormat([], {
+            timeZone: userTimeZone,
+            hour: 'numeric',
+            minute: '2-digit',
+        }).format(new Date());
+        banner.textContent = `📍 ${display} • Local time ${localTime}`;
+    };
+
+    render();
+
+    if (!locationBannerTimer) {
+        locationBannerTimer = setInterval(render, 60000);
+    }
+}
+
+function populateTimeZoneSelect() {
+    const select = document.getElementById('eventTimeZone');
+    if (!select) return;
+
+    const currentValue = select.value || userTimeZone;
+    select.innerHTML = '';
+
+    const zones = getSupportedTimeZones();
+    const uniqueZones = Array.from(new Set([currentValue, userTimeZone, ...zones].filter(Boolean)));
+    uniqueZones.sort((a, b) => a.localeCompare(b));
+
+    uniqueZones.forEach(zone => {
+        const option = document.createElement('option');
+        option.value = zone;
+        option.textContent = formatTimeZoneLabel(zone);
+        select.appendChild(option);
+    });
+
+    if (uniqueZones.includes(currentValue)) {
+        select.value = currentValue;
+    } else {
+        select.value = userTimeZone;
+    }
+}
+
+function zonedDateTimeToUtc(dateStr, timeStr, timeZone) {
+    if (!dateStr || !timeStr) return null;
+    const localIso = `${dateStr}T${timeStr}:00`;
+    const localDate = new Date(localIso);
+    if (Number.isNaN(localDate.getTime())) {
+        return null;
+    }
+
+    try {
+        const tzDate = new Date(localDate.toLocaleString('en-US', { timeZone }));
+        const offsetMs = tzDate.getTime() - localDate.getTime();
+        return new Date(localDate.getTime() - offsetMs);
+    } catch (err) {
+        console.warn(`Failed to convert ${localIso} for timezone ${timeZone}`, err);
+        return null;
+    }
+}
+
+function updateEventTimeConversionPreview() {
+    const hint = document.getElementById('eventTimeConversion');
+    const isAllDay = document.getElementById('eventAllDay').checked;
+    if (!hint || isAllDay) {
+        if (hint) hint.textContent = '';
+        return;
+    }
+
+    const date = document.getElementById('eventDate').value;
+    const startTime = document.getElementById('eventStartTime').value;
+    const endTime = document.getElementById('eventEndTime').value;
+    const timeZone = document.getElementById('eventTimeZone').value || userTimeZone;
+
+    const startUtc = zonedDateTimeToUtc(date, startTime, timeZone);
+    const endUtc = zonedDateTimeToUtc(date, endTime, timeZone);
+
+    if (!startUtc || !endUtc) {
+        hint.textContent = '';
+        return;
+    }
+
+    const datetimeOptions = {
+        timeZone: userTimeZone,
+        hour: 'numeric',
+        minute: '2-digit',
+    };
+
+    const userStart = startUtc.toLocaleString([], datetimeOptions);
+    const userEnd = endUtc.toLocaleString([], datetimeOptions);
+
+    const targetLabel = formatTimeZoneLabel(timeZone);
+    const userLabel = formatTimeZoneLabel(userTimeZone);
+    hint.textContent = `Event time in ${targetLabel} → ${userStart}–${userEnd} in ${userLabel}`;
+}
+
+function getWeekdayTokenForZone(dateStr, timeZone) {
+    if (!dateStr) return null;
+    const midnightUtc = zonedDateTimeToUtc(dateStr, '00:00', timeZone);
+    if (!midnightUtc) return null;
+    const weekday = new Intl.DateTimeFormat('en-US', {
+        timeZone,
+        weekday: 'short',
+    }).format(midnightUtc).toLowerCase();
+
+    const map = {
+        sun: 'sun',
+        mon: 'mon',
+        tue: 'tue',
+        wed: 'wed',
+        thu: 'thu',
+        fri: 'fri',
+        sat: 'sat',
+    };
+    return map[weekday] || null;
+}
+
+function initializeTimeZoneUI() {
+    if (timezoneUiInitialized) return;
+
+    const tzSelect = document.getElementById('eventTimeZone');
+    const dateInput = document.getElementById('eventDate');
+    if (!tzSelect || !dateInput) {
+        // Elements not yet in the DOM; try again shortly.
+        setTimeout(initializeTimeZoneUI, 50);
+        return;
+    }
+
+    timezoneUiInitialized = true;
+    updateUserLocationBanner();
+    populateTimeZoneSelect();
+
+    ['eventDate', 'eventStartTime', 'eventEndTime', 'eventTimeZone'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('change', updateEventTimeConversionPreview);
+            el.addEventListener('input', updateEventTimeConversionPreview);
+        }
+    });
+
+    updateEventTimeConversionPreview();
+}
+
+if (document.readyState !== 'loading') {
+    initializeTimeZoneUI();
+} else {
+    document.addEventListener('DOMContentLoaded', initializeTimeZoneUI, { once: true });
+}
 
 // ---------------------------------------------------------------------------
 // Fetch helpers & notifications
@@ -1282,6 +1505,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     initVoiceRecognition();
     await loadAcademicCalendarPresets();
     initializeRepeatControls();
+    initializeTimeZoneUI();
     
     // Try to load cached events first (instant display)
     const cachedEvents = loadEventsFromCache();
@@ -1574,6 +1798,7 @@ function escapeHtml(text) {
 function showAddEventModal() {
     const modal = document.getElementById('addEventModal');
     modal.style.display = 'flex';
+    populateTimeZoneSelect();
     
     // Set default date to today or selected date
     const dateInput = document.getElementById('eventDate');
@@ -1586,6 +1811,8 @@ function showAddEventModal() {
     document.getElementById('eventDescription').value = '';
     document.getElementById('eventAllDay').checked = false;
     document.getElementById('timeFields').style.display = 'grid';
+    document.getElementById('eventTimeZone').value = userTimeZone;
+    updateEventTimeConversionPreview();
     
     resetRecurrenceForm(dateToUse);
     handleRepeatFrequencyChange();
@@ -1603,6 +1830,7 @@ function hideAddEventModal() {
 function toggleEventTime() {
     const isAllDay = document.getElementById('eventAllDay').checked;
     document.getElementById('timeFields').style.display = isAllDay ? 'none' : 'grid';
+    updateEventTimeConversionPreview();
 }
 
 async function loadAcademicCalendarPresets() {
@@ -2236,6 +2464,8 @@ async function submitManualEvent() {
     const endTime = document.getElementById('eventEndTime').value;
     const location = document.getElementById('eventLocation').value.trim();
     const description = document.getElementById('eventDescription').value.trim();
+    const eventTimeZoneSelect = document.getElementById('eventTimeZone');
+    const eventTimeZone = (eventTimeZoneSelect && eventTimeZoneSelect.value) || userTimeZone;
     
     // Validation
     if (!title) {
@@ -2269,8 +2499,21 @@ async function submitManualEvent() {
             endDateTime.setDate(endDateTime.getDate() + 1);
         } else {
             // Timed event: combine date and time
-            startDateTime = new Date(`${date}T${startTime}`);
-            endDateTime = new Date(`${date}T${endTime}`);
+            const startUtc = zonedDateTimeToUtc(date, startTime, eventTimeZone);
+            const endUtc = zonedDateTimeToUtc(date, endTime, eventTimeZone);
+
+            if (!startUtc || !endUtc) {
+                showToast('voiceResult', 'Unable to interpret the selected time. Please double-check your entries.', true);
+                return;
+            }
+
+            if (startUtc >= endUtc) {
+                showToast('voiceResult', 'End time must be after start time for the selected timezone.', true);
+                return;
+            }
+
+            startDateTime = startUtc;
+            endDateTime = endUtc;
         }
         
         let recurrencePayload = null;
@@ -2285,8 +2528,8 @@ async function submitManualEvent() {
             const daysOfWeek = Array.from(dayButtons).map(btn => btn.dataset.day);
 
             if ((frequency === 'weekly' || frequency === 'biweekly') && daysOfWeek.length === 0) {
-                const dayTokens = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
-                daysOfWeek.push(dayTokens[startDateTime.getDay()]);
+                const defaultToken = getWeekdayTokenForZone(date, eventTimeZone) || 'mon';
+                daysOfWeek.push(defaultToken);
             }
 
             if (untilType === 'date' && !untilDateValue) {
@@ -2327,7 +2570,8 @@ async function submitManualEvent() {
                 location: location || null,
                 description: description || null,
                 all_day: isAllDay,
-                recurrence: recurrencePayload
+                recurrence: recurrencePayload,
+                event_timezone: eventTimeZone
             })
         });
         

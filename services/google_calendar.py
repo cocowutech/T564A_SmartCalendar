@@ -7,6 +7,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -49,7 +50,18 @@ class GoogleCalendarService:
         # If there are no valid credentials, let the user log in
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
+                try:
+                    creds.refresh(Request())
+                except RefreshError as exc:
+                    logger.warning(
+                        "Google OAuth refresh failed (%s); removing cached token and re-authenticating",
+                        exc
+                    )
+                    try:
+                        token_file.unlink(missing_ok=True)
+                    except OSError:
+                        logger.exception("Failed to delete invalid Google token cache at %s", token_file)
+                    creds = None
             else:
                 flow = InstalledAppFlow.from_client_secrets_file(
                     settings.google_client_secrets, SCOPES
@@ -166,9 +178,11 @@ class GoogleCalendarService:
         all_day: bool = False,
         attendees: list[dict] | None = None,
         extended_properties: dict | None = None,
+        event_timezone: str | None = None,
     ) -> dict:
-        start = self._normalize_datetime(start_time, settings.timezone)
-        end = self._normalize_datetime(end_time, settings.timezone)
+        timezone_name = event_timezone or settings.timezone
+        start = self._normalize_datetime(start_time, timezone_name)
+        end = self._normalize_datetime(end_time, timezone_name)
 
         event: dict = {
             'summary': summary,
@@ -180,11 +194,11 @@ class GoogleCalendarService:
         else:
             event['start'] = {
                 'dateTime': start.isoformat(),
-                'timeZone': settings.timezone,
+                'timeZone': timezone_name,
             }
             event['end'] = {
                 'dateTime': end.isoformat(),
-                'timeZone': settings.timezone,
+                'timeZone': timezone_name,
             }
 
         if description:
@@ -224,6 +238,7 @@ class GoogleCalendarService:
         attendees: list[dict] | None = None,
         event_id: str | None = None,
         extended_properties: dict | None = None,
+        event_timezone: str | None = None,
     ) -> dict:
         """Create a new event in Google Calendar."""
         service = self._get_calendar_service(settings)
@@ -237,6 +252,7 @@ class GoogleCalendarService:
             all_day=all_day,
             attendees=attendees,
             extended_properties=extended_properties,
+            event_timezone=event_timezone,
         )
 
         if event_id:
@@ -262,6 +278,7 @@ class GoogleCalendarService:
         attendees: list[dict] | None = None,
         event_id: str | None = None,
         extended_properties: dict | None = None,
+        event_timezone: str | None = None,
     ) -> dict:
         """Create a calendar event or update an existing one when IDs collide."""
         service = self._get_calendar_service(settings)
@@ -275,6 +292,7 @@ class GoogleCalendarService:
             all_day=all_day,
             attendees=attendees,
             extended_properties=extended_properties,
+            event_timezone=event_timezone,
         )
 
         if event_id:

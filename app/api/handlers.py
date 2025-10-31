@@ -495,6 +495,17 @@ async def create_event(
         description = payload.get('description')
         all_day = payload.get('all_day', False)
         recurrence_payload = payload.get('recurrence') or {}
+        requested_timezone_raw = payload.get('event_timezone')
+        requested_timezone = None
+        if isinstance(requested_timezone_raw, str):
+            requested_timezone = requested_timezone_raw.strip() or None
+
+        try:
+            event_timezone = ZoneInfo(requested_timezone) if requested_timezone else ZoneInfo(settings.timezone)
+            event_timezone_name = requested_timezone or settings.timezone
+        except Exception:
+            event_timezone = ZoneInfo(settings.timezone)
+            event_timezone_name = settings.timezone
 
         if not summary:
             return {"status": "error", "error": "Event title (summary) is required"}
@@ -503,20 +514,18 @@ async def create_event(
             return {"status": "error", "error": "Start and end times are required"}
 
         # Parse datetime strings with timezone awareness
-        tz = ZoneInfo(settings.timezone)
-
         start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
         end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
 
         if start_time.tzinfo is None:
-            start_time = start_time.replace(tzinfo=tz)
+            start_time = start_time.replace(tzinfo=event_timezone)
         else:
-            start_time = start_time.astimezone(tz)
+            start_time = start_time.astimezone(event_timezone)
 
         if end_time.tzinfo is None:
-            end_time = end_time.replace(tzinfo=tz)
+            end_time = end_time.replace(tzinfo=event_timezone)
         else:
-            end_time = end_time.astimezone(tz)
+            end_time = end_time.astimezone(event_timezone)
 
         if recurrence_payload.get("enabled"):
             rule, parent_id = _build_recurrence_rule(
@@ -553,6 +562,7 @@ async def create_event(
                     all_day=all_day,
                     event_id=occurrence_id,
                     extended_properties=extended_properties,
+                    event_timezone=event_timezone_name,
                 )
                 created_events.append(result.get("event", result))
 
@@ -572,6 +582,7 @@ async def create_event(
             description=description,
             location=location,
             all_day=all_day,
+            event_timezone=event_timezone_name,
         )
 
         return {"status": "ok", "event": result}
