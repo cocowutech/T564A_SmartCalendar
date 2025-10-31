@@ -155,10 +155,25 @@
                 <div class="simple-calendar-container">
                     <div class="simple-greeting" id="simpleGreeting">
                         <h2>Hi! 👋</h2>
+                        <p id="simpleQuote" class="simple-quote">Loading inspiration...</p>
                         <p id="simpleDate"></p>
                     </div>
                     <div class="simple-summary" id="simpleSummary">
                         <p>Loading your schedule...</p>
+                    </div>
+                    <div class="simple-todo" id="simpleTodo">
+                        <div class="simple-todo-header">
+                            <h3>Today's To-Do</h3>
+                            <button type="button" id="clearCompletedTodos" class="simple-todo-clear" aria-label="Clear completed tasks">
+                                <span class="sr-only">Clear completed tasks</span>
+                                <span aria-hidden="true">🧹</span>
+                            </button>
+                        </div>
+                        <form id="todoForm" class="simple-todo-form">
+                            <input type="text" id="todoInput" placeholder="Add a new task..." autocomplete="off">
+                            <button type="submit" class="simple-todo-submit">Add</button>
+                        </form>
+                        <ul id="todoList" class="simple-todo-list" aria-live="polite"></ul>
                     </div>
                     <div class="simple-events" id="simpleEventsList"></div>
                 </div>

@@ -31,6 +31,14 @@ let editingEventContext = null;
 let timezoneUiInitialized = false;
 let locationBannerTimer = null;
 
+const TODO_STORAGE_PREFIX = 'smartCalendar.todo.';
+const todoMemoryStore = {};
+let todoUiInitialized = false;
+let currentTodoDateKey = null;
+
+const QUOTE_API_URL = 'https://motivational-spark-api.vercel.app/api/quotes/random';
+const quoteCache = {};
+
 const DEFAULT_TIME_ZONES = [
     'UTC',
     'America/New_York',
@@ -2731,6 +2739,327 @@ async function importBatchEvents() {
 }
 
 // ---------------------------------------------------------------------------
+// Simple View To-Do List
+// ---------------------------------------------------------------------------
+
+function getSimpleTodoElements() {
+    return {
+        container: document.getElementById('simpleTodo'),
+        form: document.getElementById('todoForm'),
+        input: document.getElementById('todoInput'),
+        list: document.getElementById('todoList'),
+        clearButton: document.getElementById('clearCompletedTodos'),
+    };
+}
+
+function getTodoStorageKey(dateKey) {
+    return `${TODO_STORAGE_PREFIX}${dateKey}`;
+}
+
+function loadTodosForDate(dateKey) {
+    if (!dateKey) return [];
+
+    let stored = [];
+    try {
+        if (typeof localStorage !== 'undefined') {
+            const raw = localStorage.getItem(getTodoStorageKey(dateKey));
+            stored = raw ? JSON.parse(raw) : [];
+        } else {
+            stored = todoMemoryStore[dateKey] || [];
+        }
+    } catch (err) {
+        console.warn('Unable to read todo list, falling back to memory store.', err);
+        stored = todoMemoryStore[dateKey] || [];
+    }
+
+    if (!Array.isArray(stored)) {
+        return [];
+    }
+
+    const normalized = stored
+        .filter(item => item && typeof item.text === 'string')
+        .map(item => ({
+            id: typeof item.id === 'string' ? item.id : `todo-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            text: item.text,
+            completed: Boolean(item.completed),
+            createdAt: item.createdAt || Date.now(),
+        }));
+
+    todoMemoryStore[dateKey] = normalized;
+
+    return normalized;
+}
+
+function saveTodosForDate(dateKey, todos) {
+    if (!dateKey) return;
+    const safeTodos = Array.isArray(todos) ? todos : [];
+
+    todoMemoryStore[dateKey] = safeTodos;
+
+    try {
+        if (typeof localStorage !== 'undefined') {
+            localStorage.setItem(getTodoStorageKey(dateKey), JSON.stringify(safeTodos));
+        }
+    } catch (err) {
+        console.warn('Unable to persist todo list to localStorage, using in-memory fallback.', err);
+    }
+}
+
+function createTodoItem(text) {
+    let id = `todo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        try {
+            id = crypto.randomUUID();
+        } catch (err) {
+            // Ignore and use fallback id
+        }
+    }
+    return {
+        id,
+        text,
+        completed: false,
+        createdAt: Date.now(),
+    };
+}
+
+function renderSimpleTodoList(dateKey) {
+    const { list, clearButton } = getSimpleTodoElements();
+    if (!list) return;
+
+    currentTodoDateKey = dateKey;
+    const todos = loadTodosForDate(dateKey);
+
+    list.innerHTML = '';
+
+    if (!todos.length) {
+        const emptyState = document.createElement('li');
+        emptyState.className = 'simple-todo-empty';
+        emptyState.textContent = 'Nothing on your to-do list yet. Add a task to get started.';
+        list.appendChild(emptyState);
+        if (clearButton) {
+            clearButton.disabled = true;
+        }
+        return;
+    }
+
+    todos.forEach(todo => {
+        const li = document.createElement('li');
+        li.className = 'simple-todo-item';
+        li.dataset.todoId = todo.id;
+        if (todo.completed) {
+            li.classList.add('completed');
+        }
+
+        const label = document.createElement('label');
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'simple-todo-toggle';
+        checkbox.checked = todo.completed;
+        checkbox.setAttribute('aria-label', `Mark "${todo.text}" as ${todo.completed ? 'not done' : 'done'}`);
+
+        const textSpan = document.createElement('span');
+        textSpan.textContent = todo.text;
+
+        label.appendChild(checkbox);
+        label.appendChild(textSpan);
+
+        const actions = document.createElement('div');
+        actions.className = 'simple-todo-actions';
+
+        const editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'simple-todo-edit';
+        editBtn.title = 'Edit task';
+        editBtn.setAttribute('aria-label', `Edit "${todo.text}"`);
+        editBtn.textContent = 'Edit';
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.type = 'button';
+        deleteBtn.className = 'simple-todo-delete';
+        deleteBtn.title = 'Remove task';
+        deleteBtn.setAttribute('aria-label', `Remove "${todo.text}"`);
+        deleteBtn.textContent = '×';
+
+        li.appendChild(label);
+        actions.appendChild(editBtn);
+        actions.appendChild(deleteBtn);
+        li.appendChild(actions);
+        list.appendChild(li);
+    });
+
+    if (clearButton) {
+        const completedCount = todos.filter(todo => todo.completed).length;
+        clearButton.disabled = completedCount === 0;
+    }
+}
+
+function initializeSimpleTodoUi() {
+    if (todoUiInitialized) return;
+    const { form, input, list, clearButton } = getSimpleTodoElements();
+    if (!form || !input || !list || !clearButton) return;
+
+    form.addEventListener('submit', (event) => {
+        event.preventDefault();
+        const value = input.value.trim();
+        if (!value) return;
+
+        const dateKey = currentTodoDateKey || new Date().toISOString().split('T')[0];
+        const todos = loadTodosForDate(dateKey);
+        todos.push(createTodoItem(value));
+        saveTodosForDate(dateKey, todos);
+        input.value = '';
+        renderSimpleTodoList(dateKey);
+    });
+
+    list.addEventListener('change', (event) => {
+        const checkbox = event.target;
+        if (!(checkbox instanceof HTMLInputElement) || !checkbox.classList.contains('simple-todo-toggle')) {
+            return;
+        }
+        const li = checkbox.closest('.simple-todo-item');
+        if (!li) return;
+
+        const todoId = li.dataset.todoId;
+        const dateKey = currentTodoDateKey || new Date().toISOString().split('T')[0];
+        const todos = loadTodosForDate(dateKey).map(todo => {
+            if (todo.id === todoId) {
+                return { ...todo, completed: checkbox.checked };
+            }
+            return todo;
+        });
+        saveTodosForDate(dateKey, todos);
+        renderSimpleTodoList(dateKey);
+    });
+
+    list.addEventListener('click', (event) => {
+        const targetEl = event.target instanceof HTMLElement ? event.target : null;
+        if (!targetEl) return;
+
+        const editButton = targetEl.closest('.simple-todo-edit');
+        if (editButton) {
+            const li = editButton.closest('.simple-todo-item');
+            if (!li) return;
+
+            const todoId = li.dataset.todoId;
+            const dateKey = currentTodoDateKey || new Date().toISOString().split('T')[0];
+            const todos = loadTodosForDate(dateKey);
+            const index = todos.findIndex(todo => todo.id === todoId);
+            if (index === -1) return;
+
+            const currentText = todos[index].text;
+            const updatedText = prompt('Edit task', currentText);
+            if (updatedText === null) {
+                return;
+            }
+            const trimmed = updatedText.trim();
+            if (!trimmed) {
+                return;
+            }
+
+            todos[index] = { ...todos[index], text: trimmed };
+            saveTodosForDate(dateKey, todos);
+            renderSimpleTodoList(dateKey);
+            return;
+        }
+
+        const deleteButton = targetEl.closest('.simple-todo-delete');
+        if (!deleteButton) return;
+        const li = deleteButton.closest('.simple-todo-item');
+        if (!li) return;
+
+        const todoId = li.dataset.todoId;
+        const dateKey = currentTodoDateKey || new Date().toISOString().split('T')[0];
+        const todos = loadTodosForDate(dateKey).filter(todo => todo.id !== todoId);
+        saveTodosForDate(dateKey, todos);
+        renderSimpleTodoList(dateKey);
+    });
+
+    clearButton.addEventListener('click', () => {
+        const dateKey = currentTodoDateKey || new Date().toISOString().split('T')[0];
+        const todos = loadTodosForDate(dateKey).filter(todo => !todo.completed);
+        saveTodosForDate(dateKey, todos);
+        renderSimpleTodoList(dateKey);
+    });
+
+    todoUiInitialized = true;
+}
+
+// ---------------------------------------------------------------------------
+// Motivational Quote
+// ---------------------------------------------------------------------------
+
+function setSimpleQuoteContent(quote) {
+    const quoteEl = document.getElementById('simpleQuote');
+    if (!quoteEl) return;
+
+    if (!quote || !quote.text) {
+        quoteEl.textContent = 'Stay focused and keep moving forward!';
+        return;
+    }
+
+    const safeQuote = escapeHtml(quote.text);
+    const safeAuthor = quote.author ? escapeHtml(quote.author) : null;
+    quoteEl.innerHTML = safeAuthor ? `“${safeQuote}” — ${safeAuthor}` : `“${safeQuote}”`;
+}
+
+async function fetchMotivationalQuote() {
+    const response = await fetch(QUOTE_API_URL, {
+        headers: { 'Accept': 'application/json' },
+        cache: 'no-store',
+    });
+
+    if (!response.ok) {
+        throw new Error(`Quote request failed (${response.status})`);
+    }
+
+    const data = await response.json();
+    const quoteText =
+        data.quote ||
+        data.text ||
+        data.message ||
+        (data.data && (data.data.quote || data.data.text)) ||
+        null;
+    const author =
+        data.author ||
+        data.writer ||
+        (data.data && (data.data.author || data.data.writer)) ||
+        null;
+
+    if (!quoteText) {
+        throw new Error('Quote response missing text');
+    }
+
+    return {
+        text: String(quoteText),
+        author: author ? String(author) : null,
+    };
+}
+
+async function updateSimpleQuote(dateKey) {
+    const normalizedKey = dateKey || new Date().toISOString().split('T')[0];
+
+    if (quoteCache[normalizedKey]) {
+        setSimpleQuoteContent(quoteCache[normalizedKey]);
+        return;
+    }
+
+    const quoteEl = document.getElementById('simpleQuote');
+    if (quoteEl) {
+        quoteEl.textContent = 'Loading inspiration...';
+    }
+
+    try {
+        const quote = await fetchMotivationalQuote();
+        quoteCache[normalizedKey] = quote;
+        setSimpleQuoteContent(quote);
+    } catch (err) {
+        console.warn('Unable to load motivational quote.', err);
+        setSimpleQuoteContent(null);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // View Switching (Grid vs Simple)
 // ---------------------------------------------------------------------------
 
@@ -2777,6 +3106,10 @@ function renderSimpleView() {
     // Generate natural language summary
     const summary = generateNaturalLanguageSummary(todayEvents);
     document.getElementById('simpleSummary').innerHTML = `<p>${summary}</p>`;
+
+    updateSimpleQuote(todayKey);
+    initializeSimpleTodoUi();
+    renderSimpleTodoList(todayKey);
 
     // Hide event cards - they're not needed in simple view
     document.getElementById('simpleEventsList').style.display = 'none';
