@@ -35,7 +35,11 @@ env/
 # Google OAuth credentials
 client_secret.json
 token.pickle
+token.json
 .credentials/
+
+# User configuration (contains personal calendar URLs)
+config.yaml
 
 # IDE
 .vscode/

@@ -514,18 +514,28 @@ async def create_event(
             return {"status": "error", "error": "Start and end times are required"}
 
         # Parse datetime strings with timezone awareness
-        start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
-        end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
-
-        if start_time.tzinfo is None:
-            start_time = start_time.replace(tzinfo=event_timezone)
+        # Handle date-only strings for all-day events (format: "2025-11-26")
+        if all_day and re.match(r'^\d{4}-\d{2}-\d{2}$', start_time_str):
+            # For all-day events with date-only strings, parse as local date at noon
+            start_time = datetime.strptime(start_time_str, "%Y-%m-%d").replace(
+                hour=12, tzinfo=event_timezone
+            )
+            end_time = datetime.strptime(end_time_str, "%Y-%m-%d").replace(
+                hour=12, tzinfo=event_timezone
+            )
         else:
-            start_time = start_time.astimezone(event_timezone)
+            start_time = datetime.fromisoformat(start_time_str.replace("Z", "+00:00"))
+            end_time = datetime.fromisoformat(end_time_str.replace("Z", "+00:00"))
 
-        if end_time.tzinfo is None:
-            end_time = end_time.replace(tzinfo=event_timezone)
-        else:
-            end_time = end_time.astimezone(event_timezone)
+            if start_time.tzinfo is None:
+                start_time = start_time.replace(tzinfo=event_timezone)
+            else:
+                start_time = start_time.astimezone(event_timezone)
+
+            if end_time.tzinfo is None:
+                end_time = end_time.replace(tzinfo=event_timezone)
+            else:
+                end_time = end_time.astimezone(event_timezone)
 
         if recurrence_payload.get("enabled"):
             rule, parent_id = _build_recurrence_rule(

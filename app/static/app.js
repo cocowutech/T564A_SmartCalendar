@@ -429,8 +429,8 @@ function parseEvent(raw) {
 
     if (raw.start) {
         // Check if it's a date-only string (all-day event) like "2025-11-21"
-        if (raw.start.match(/^\d{4}-\d{2}-\d{2}$/) && raw.allDay) {
-            // Parse as local date to avoid timezone shift
+        // Parse date-only strings as local dates to avoid timezone shift
+        if (raw.start.match(/^\d{4}-\d{2}-\d{2}$/)) {
             const parts = raw.start.split('-');
             start = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
         } else {
@@ -448,8 +448,8 @@ function parseEvent(raw) {
 
     if (raw.end) {
         // Check if it's a date-only string (all-day event)
-        if (raw.end.match(/^\d{4}-\d{2}-\d{2}$/) && raw.allDay) {
-            // Parse as local date to avoid timezone shift
+        // Parse date-only strings as local dates to avoid timezone shift
+        if (raw.end.match(/^\d{4}-\d{2}-\d{2}$/)) {
             const parts = raw.end.split('-');
             end = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
         } else {
@@ -1757,10 +1757,16 @@ function updateAllDayEvents() {
             const dayOfWeek = (ev.start.getDay() + 6) % 7;
             const dayName = DAY_NAMES[dayOfWeek];
             const fullTitle = `${escapeHtml(ev.title)}\n${ev.start.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}`;
+            // Show delete button for non-Canvas events
+            const canDelete = !ev.source.includes('Canvas');
+            const deleteBtn = canDelete
+                ? `<button class="all-day-delete-btn" onclick="deleteEvent('${ev.id}', '${escapeHtml(ev.title).replace(/'/g, "\\'")}', '${ev.source}')" title="Delete event">×</button>`
+                : '';
             return `
-                <div class="all-day-event-card">
+                <div class="all-day-event-card${canDelete ? ' deletable' : ''}">
                     <span class="event-date">${dayName}<br>${ev.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
                     <span class="event-title" title="${fullTitle}">${escapeHtml(ev.title)}</span>
+                    ${deleteBtn}
                 </div>
             `;
         }).join('');
@@ -2501,10 +2507,13 @@ async function submitManualEvent() {
         let startDateTime, endDateTime;
         
         if (isAllDay) {
-            // All-day event: use date only
-            startDateTime = new Date(date);
-            endDateTime = new Date(date);
-            endDateTime.setDate(endDateTime.getDate() + 1);
+            // All-day event: send date strings directly to avoid timezone issues
+            // We'll use a special format that the backend can recognize
+            startDateTime = date;  // Just the date string like "2025-11-26"
+            // Calculate next day for end date
+            const [year, month, day] = date.split('-').map(Number);
+            const nextDay = new Date(year, month - 1, day + 1);
+            endDateTime = nextDay.toISOString().split('T')[0];  // "2025-11-27"
         } else {
             // Timed event: combine date and time
             const startUtc = zonedDateTimeToUtc(date, startTime, eventTimeZone);
@@ -2573,8 +2582,8 @@ async function submitManualEvent() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 summary: title,
-                start_time: startDateTime.toISOString(),
-                end_time: endDateTime.toISOString(),
+                start_time: typeof startDateTime === 'string' ? startDateTime : startDateTime.toISOString(),
+                end_time: typeof endDateTime === 'string' ? endDateTime : endDateTime.toISOString(),
                 location: location || null,
                 description: description || null,
                 all_day: isAllDay,
@@ -3086,22 +3095,37 @@ function switchView(view) {
 }
 
 function renderSimpleView() {
-    const today = new Date();
-    const todayKey = today.toISOString().split('T')[0];
+    const referenceDate = selectedDate ? new Date(selectedDate) : new Date();
+    const normalizedDate = new Date(
+        referenceDate.getFullYear(),
+        referenceDate.getMonth(),
+        referenceDate.getDate()
+    );
+    const todayKey = [
+        normalizedDate.getFullYear(),
+        String(normalizedDate.getMonth() + 1).padStart(2, '0'),
+        String(normalizedDate.getDate()).padStart(2, '0')
+    ].join('-');
 
-    // Update date display
+    // Update date display so header matches the selected day
     const dateOptions = { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' };
-    document.getElementById('simpleDate').textContent = today.toLocaleDateString(undefined, dateOptions);
+    document.getElementById('simpleDate').textContent =
+        normalizedDate.toLocaleDateString(undefined, dateOptions);
 
-    // Get today's events
-    const todayEvents = events.filter(ev => {
-        if (ev.allDay) {
-            const eventDate = new Date(ev.start);
-            return eventDate.toISOString().split('T')[0] === todayKey;
-        } else {
+    // Get events for the selected day
+    const todayEvents = events
+        .filter(ev => {
+            if (ev.allDay) {
+                const eventDate = new Date(ev.start);
+                return (
+                    eventDate.getFullYear() === normalizedDate.getFullYear() &&
+                    eventDate.getMonth() === normalizedDate.getMonth() &&
+                    eventDate.getDate() === normalizedDate.getDate()
+                );
+            }
             return getEventKey(ev) === todayKey;
-        }
-    }).sort((a, b) => a.start - b.start);
+        })
+        .sort((a, b) => a.start - b.start);
 
     // Generate natural language summary
     const summary = generateNaturalLanguageSummary(todayEvents);
