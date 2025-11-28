@@ -106,9 +106,17 @@ class Settings(BaseSettings):
 
         logger = logging.getLogger(__name__)
 
-        # If JSON content is provided via env var, write it to a temp file
-        if self.google_client_secrets_json:
-            logger.info("Using GOOGLE_OAUTH_CLIENT_SECRETS_JSON env var")
+        # Check for JSON content - either in dedicated JSON var or in the main var
+        json_content = self.google_client_secrets_json
+
+        # Auto-detect: if google_client_secrets looks like JSON (starts with {), use it
+        if not json_content and self.google_client_secrets and self.google_client_secrets.strip().startswith('{'):
+            logger.info("Detected JSON content in GOOGLE_OAUTH_CLIENT_SECRETS, using it directly")
+            json_content = self.google_client_secrets
+
+        # If JSON content is provided, write it to a temp file
+        if json_content:
+            logger.info("Using OAuth JSON content from environment variable")
             # Create a persistent temp file for the session
             secrets_dir = Path(tempfile.gettempdir()) / "smart-calendar"
             secrets_dir.mkdir(exist_ok=True)
@@ -116,7 +124,7 @@ class Settings(BaseSettings):
 
             try:
                 # Parse and re-serialize to validate JSON
-                secrets_data = json.loads(self.google_client_secrets_json)
+                secrets_data = json.loads(json_content)
 
                 # Validate it has expected structure
                 if 'web' not in secrets_data and 'installed' not in secrets_data:
@@ -133,9 +141,9 @@ class Settings(BaseSettings):
                 return str(secrets_file)
 
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse GOOGLE_OAUTH_CLIENT_SECRETS_JSON: {e}")
+                logger.error(f"Failed to parse OAuth JSON: {e}")
                 raise ValueError(
-                    f"GOOGLE_OAUTH_CLIENT_SECRETS_JSON is not valid JSON: {e}. "
+                    f"OAuth credentials JSON is not valid: {e}. "
                     "Make sure to copy the entire content of client_secret.json without modification."
                 )
 

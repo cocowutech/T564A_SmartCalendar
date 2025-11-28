@@ -66,10 +66,18 @@ async def auth_debug():
     """Debug endpoint to check OAuth configuration (no sensitive data exposed)."""
     settings = get_settings()
 
+    # Check if JSON is in the main var
+    main_var_is_json = bool(
+        settings.google_client_secrets and
+        settings.google_client_secrets.strip().startswith('{')
+    )
+
     config_info = {
-        "has_json_env_var": bool(settings.google_client_secrets_json),
-        "json_env_var_length": len(settings.google_client_secrets_json) if settings.google_client_secrets_json else 0,
-        "file_path_setting": settings.google_client_secrets,
+        "has_dedicated_json_env_var": bool(settings.google_client_secrets_json),
+        "main_var_contains_json": main_var_is_json,
+        "json_source": "GOOGLE_OAUTH_CLIENT_SECRETS_JSON" if settings.google_client_secrets_json else (
+            "GOOGLE_OAUTH_CLIENT_SECRETS (auto-detected)" if main_var_is_json else "none"
+        ),
         "environment": os.environ.get("ENVIRONMENT", "not_set"),
     }
 
