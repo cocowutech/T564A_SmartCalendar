@@ -2081,3 +2081,24 @@ body {
     padding: 0.25rem 0.5rem;
     font-size: 0.75rem;
 }
+
+/* Google Calendar Connection Status */
+.google-calendar-status {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--secondary-light);
+    border-radius: var(--radius);
+    margin-bottom: 0.75rem;
+    font-size: 0.875rem;
+    color: var(--text-primary);
+}
+
+.google-calendar-status .status-icon {
+    font-size: 1rem;
+}
+
+.google-calendar-status .status-text {
+    font-weight: 500;
+}

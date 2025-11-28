@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart Calendar Agent</title>
-    <link rel="stylesheet" href="/static/styles.css?v=5">
+    <link rel="stylesheet" href="/static/styles.css?v=6">
 </head>
 <body>
     <div class="app-shell">
@@ -94,6 +94,10 @@
 
                 <section class="panel-card">
                     <h2>Calendar Sources</h2>
+                    <div class="google-calendar-status" id="googleCalendarStatus">
+                        <span class="status-icon">✅</span>
+                        <span class="status-text">Google Calendar connected</span>
+                    </div>
                     <button class="btn btn-primary btn-block" onclick="showCalendarSourcesModal()">
                         <span class="icon">⚙️</span> Manage Sources
                     </button>
