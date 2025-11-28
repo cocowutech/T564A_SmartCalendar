@@ -142,6 +142,199 @@ async function logout() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Calendar Sources Management (per-user configuration)
+// ---------------------------------------------------------------------------
+
+let userCalendarSources = { canvas_sources: [], ics_sources: [] };
+
+async function loadUserCalendarSources() {
+    try {
+        const response = await fetch(`${API_BASE}/user/calendar-sources`);
+        const data = await response.json();
+        if (data.status === 'ok') {
+            userCalendarSources = {
+                canvas_sources: data.canvas_sources || [],
+                ics_sources: data.ics_sources || []
+            };
+            updateSourcesSummary();
+            updateSourcesList();
+        }
+    } catch (error) {
+        console.error('Failed to load calendar sources:', error);
+    }
+}
+
+function updateSourcesSummary() {
+    const summary = document.getElementById('userSourcesSummary');
+    if (!summary) return;
+
+    const total = userCalendarSources.canvas_sources.length + userCalendarSources.ics_sources.length;
+    if (total === 0) {
+        summary.innerHTML = '<p class="hint">Add your Canvas, Outlook, or other calendar URLs to sync.</p>';
+    } else {
+        const sources = [...userCalendarSources.canvas_sources, ...userCalendarSources.ics_sources];
+        const names = sources.map(s => s.name).join(', ');
+        summary.innerHTML = `<p class="hint">${total} source${total > 1 ? 's' : ''}: ${names}</p>`;
+    }
+}
+
+function updateSourcesList() {
+    const list = document.getElementById('calendarSourcesList');
+    if (!list) return;
+
+    const allSources = [
+        ...userCalendarSources.canvas_sources.map(s => ({ ...s, type: 'canvas' })),
+        ...userCalendarSources.ics_sources.map(s => ({ ...s, type: s.source_type || 'ics' }))
+    ];
+
+    if (allSources.length === 0) {
+        list.innerHTML = '<p class="hint">No calendar sources configured yet.</p>';
+        return;
+    }
+
+    list.innerHTML = allSources.map(source => `
+        <div class="source-item">
+            <div class="source-info">
+                <span class="source-type-badge ${source.type}">${source.type.toUpperCase()}</span>
+                <span class="source-name">${escapeHtml(source.name)}</span>
+            </div>
+            <button class="btn btn-light btn-sm" onclick="removeCalendarSource('${escapeHtml(source.url)}')">
+                Remove
+            </button>
+        </div>
+    `).join('');
+}
+
+function showCalendarSourcesModal() {
+    const modal = document.getElementById('calendarSourcesModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        loadUserCalendarSources();
+    }
+}
+
+function hideCalendarSourcesModal() {
+    const modal = document.getElementById('calendarSourcesModal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+async function addCalendarSource() {
+    const sourceType = document.getElementById('sourceType').value;
+    const name = document.getElementById('sourceName').value.trim();
+    const url = document.getElementById('sourceUrl').value.trim();
+
+    if (!name) {
+        showToast('ingestResult', 'Please enter a display name', true);
+        return;
+    }
+    if (!url) {
+        showToast('ingestResult', 'Please enter a calendar URL', true);
+        return;
+    }
+
+    try {
+        const response = await fetch(`${API_BASE}/user/calendar-sources`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, url, source_type: sourceType })
+        });
+        const data = await response.json();
+
+        if (data.status === 'ok') {
+            userCalendarSources = {
+                canvas_sources: data.canvas_sources || [],
+                ics_sources: data.ics_sources || []
+            };
+            updateSourcesSummary();
+            updateSourcesList();
+            // Clear form
+            document.getElementById('sourceName').value = '';
+            document.getElementById('sourceUrl').value = '';
+            showToast('ingestResult', `Added ${name}!`, false, 3000);
+        } else {
+            showToast('ingestResult', data.error || 'Failed to add source', true);
+        }
+    } catch (error) {
+        console.error('Failed to add calendar source:', error);
+        showToast('ingestResult', 'Failed to add calendar source', true);
+    }
+}
+
+async function removeCalendarSource(url) {
+    if (!confirm('Remove this calendar source?')) return;
+
+    try {
+        const response = await fetch(`${API_BASE}/user/calendar-sources`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+        });
+        const data = await response.json();
+
+        if (data.status === 'ok') {
+            userCalendarSources = {
+                canvas_sources: data.canvas_sources || [],
+                ics_sources: data.ics_sources || []
+            };
+            updateSourcesSummary();
+            updateSourcesList();
+            showToast('ingestResult', 'Source removed', false, 3000);
+        } else {
+            showToast('ingestResult', data.error || 'Failed to remove source', true);
+        }
+    } catch (error) {
+        console.error('Failed to remove calendar source:', error);
+        showToast('ingestResult', 'Failed to remove calendar source', true);
+    }
+}
+
+async function syncUserSources() {
+    showToast('ingestResult', '🔄 Syncing calendar sources...', false, 0);
+
+    try {
+        const response = await fetch(`${API_BASE}/user/sync-sources`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        const data = await response.json();
+
+        if (data.status === 'ok') {
+            const synced = data.synced || [];
+            const successful = synced.filter(s => s.status === 'ok');
+            const failed = synced.filter(s => s.status === 'error');
+
+            let message = '';
+            if (synced.length === 0) {
+                message = 'No calendar sources to sync. Add sources in Settings.';
+            } else if (failed.length === 0) {
+                const totalEvents = successful.reduce((sum, s) => sum + (s.events_synced || 0), 0);
+                message = `✅ Synced ${totalEvents} events from ${successful.length} source${successful.length > 1 ? 's' : ''}`;
+            } else {
+                message = `Synced ${successful.length} sources, ${failed.length} failed`;
+            }
+
+            showToast('ingestResult', message, failed.length > 0, 5000);
+
+            // Refresh events
+            await loadRealEvents();
+        } else {
+            showToast('ingestResult', data.error || 'Sync failed', true, 5000);
+        }
+    } catch (error) {
+        console.error('Sync failed:', error);
+        showToast('ingestResult', 'Failed to sync calendar sources', true, 5000);
+    }
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
 const DEFAULT_TIME_ZONES = [
     'UTC',
     'America/New_York',
@@ -1632,6 +1825,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     await loadAcademicCalendarPresets();
     initializeRepeatControls();
     initializeTimeZoneUI();
+    loadUserCalendarSources();  // Load per-user calendar sources
 
     // Try to load cached events first (instant display)
     const cachedEvents = loadEventsFromCache();

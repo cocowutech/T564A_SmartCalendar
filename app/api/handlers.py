@@ -8,6 +8,14 @@ from fastapi import APIRouter, Depends, Request
 
 from core.config import Settings, get_settings
 from core.session import get_session_id
+from core.user_config import (
+    load_user_config,
+    save_user_config,
+    add_calendar_source,
+    remove_calendar_source,
+    get_all_ics_sources,
+    IcsSource,
+)
 from services.google_calendar import GoogleCalendarService
 from services.ingestion import GmailIngestionService, IcsIngestionService
 from services.recurrence import (
@@ -726,3 +734,138 @@ async def batch_import_events(
 
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+# ============================================================================
+# User Calendar Sources (per-user configuration for multi-user deployment)
+# ============================================================================
+
+@router.get("/user/calendar-sources")
+async def get_user_calendar_sources(request: Request) -> dict:
+    """Get user's configured calendar sources (Canvas, Outlook, etc.)."""
+    session_id = get_session_id(request)
+    if not session_id:
+        return {"status": "error", "error": "Not authenticated"}
+
+    config = load_user_config(session_id)
+    return {
+        "status": "ok",
+        "canvas_sources": [s.model_dump() for s in config.canvas_sources],
+        "ics_sources": [s.model_dump() for s in config.ics_sources],
+    }
+
+
+@router.post("/user/calendar-sources")
+async def add_user_calendar_source(request: Request, payload: dict) -> dict:
+    """
+    Add a calendar source for the user.
+
+    Expected payload:
+    {
+        "name": "Harvard Canvas",
+        "url": "https://canvas.harvard.edu/feeds/calendars/...",
+        "source_type": "canvas"  // or "outlook", "ics"
+    }
+    """
+    session_id = get_session_id(request)
+    if not session_id:
+        return {"status": "error", "error": "Not authenticated"}
+
+    name = payload.get("name", "").strip()
+    url = payload.get("url", "").strip()
+    source_type = payload.get("source_type", "ics").lower()
+
+    if not name:
+        return {"status": "error", "error": "Name is required"}
+
+    if not url:
+        return {"status": "error", "error": "URL is required"}
+
+    # Validate URL format
+    if not url.startswith(("http://", "https://")):
+        return {"status": "error", "error": "URL must start with http:// or https://"}
+
+    # Auto-detect source type from URL if not specified
+    if source_type == "ics":
+        if "canvas" in url.lower():
+            source_type = "canvas"
+        elif "outlook" in url.lower() or "office365" in url.lower():
+            source_type = "outlook"
+
+    config = add_calendar_source(session_id, name, url, source_type)
+
+    return {
+        "status": "ok",
+        "message": f"Added {source_type} source: {name}",
+        "canvas_sources": [s.model_dump() for s in config.canvas_sources],
+        "ics_sources": [s.model_dump() for s in config.ics_sources],
+    }
+
+
+@router.delete("/user/calendar-sources")
+async def remove_user_calendar_source(request: Request, payload: dict) -> dict:
+    """Remove a calendar source by URL."""
+    session_id = get_session_id(request)
+    if not session_id:
+        return {"status": "error", "error": "Not authenticated"}
+
+    url = payload.get("url", "").strip()
+    if not url:
+        return {"status": "error", "error": "URL is required"}
+
+    config = remove_calendar_source(session_id, url)
+
+    return {
+        "status": "ok",
+        "message": "Calendar source removed",
+        "canvas_sources": [s.model_dump() for s in config.canvas_sources],
+        "ics_sources": [s.model_dump() for s in config.ics_sources],
+    }
+
+
+@router.post("/user/sync-sources")
+async def sync_user_sources(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+    ics_service: IcsIngestionService = Depends(IcsIngestionService),
+) -> dict:
+    """
+    Sync all user's configured calendar sources to Google Calendar.
+    """
+    session_id = get_session_id(request)
+    if not session_id:
+        return {"status": "error", "error": "Not authenticated"}
+
+    calendar_service = get_calendar_service(request)
+
+    # Check if user has valid Google credentials
+    if not calendar_service.has_valid_credentials(settings):
+        return {"status": "error", "error": "Please connect Google Calendar first"}
+
+    sources = get_all_ics_sources(session_id)
+    if not sources:
+        return {"status": "ok", "message": "No calendar sources configured", "synced": []}
+
+    results = []
+    for source in sources:
+        try:
+            # Use the ICS service to sync this source
+            sync_result = await ics_service.sync_user_ics_source(
+                source=source,
+                session_id=session_id,
+                settings=settings,
+            )
+            results.append({
+                "name": source.name,
+                "url": source.url[:50] + "..." if len(source.url) > 50 else source.url,
+                "status": "ok",
+                "events_synced": sync_result.get("events_synced", 0),
+            })
+        except Exception as e:
+            results.append({
+                "name": source.name,
+                "status": "error",
+                "error": str(e),
+            })
+
+    return {"status": "ok", "synced": results}

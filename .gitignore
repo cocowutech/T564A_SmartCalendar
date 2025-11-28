@@ -38,6 +38,7 @@ token.pickle
 token.json
 .credentials/
 user_tokens/
+user_configs/
 
 # User configuration (contains personal calendar URLs)
 config.yaml

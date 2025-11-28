@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart Calendar Agent</title>
-    <link rel="stylesheet" href="/static/styles.css?v=4">
+    <link rel="stylesheet" href="/static/styles.css?v=5">
 </head>
 <body>
     <div class="app-shell">
@@ -93,16 +93,16 @@
                 </section>
 
                 <section class="panel-card">
-                    <h2>Sync Sources</h2>
-                    <button class="btn btn-success btn-block" onclick="syncAll()">
+                    <h2>Calendar Sources</h2>
+                    <button class="btn btn-primary btn-block" onclick="showCalendarSourcesModal()">
+                        <span class="icon">⚙️</span> Manage Sources
+                    </button>
+                    <div id="userSourcesSummary" class="sources-summary">
+                        <p class="hint">Add your Canvas, Outlook, or other calendar URLs to sync.</p>
+                    </div>
+                    <button class="btn btn-success btn-block" onclick="syncUserSources()" style="margin-top: 0.5rem;">
                         <span class="icon">🔄</span> Sync All Sources
                     </button>
-                    <div class="sync-grid">
-                        <button class="btn btn-light" onclick="refreshGoogleCalendar(event)">Google Calendar</button>
-                        <button class="btn btn-light" onclick="ingestCanvas(event)">Canvas</button>
-                        <!-- Gmail sync hidden per user request -->
-                        <button class="btn btn-light" onclick="ingestOutlook(event)">Outlook Calendar</button>
-                    </div>
                     <div class="auto-sync-panel">
                         <label class="toggle-label">
                             <input type="checkbox" id="autoSyncToggle" onchange="toggleAutoSync()">
@@ -377,6 +377,54 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=4"></script>
+    <!-- Calendar Sources Modal -->
+    <div class="modal" id="calendarSourcesModal" style="display: none;">
+        <div class="modal-overlay" onclick="hideCalendarSourcesModal()"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>⚙️ Manage Calendar Sources</h2>
+                <button class="modal-close" onclick="hideCalendarSourcesModal()">×</button>
+            </div>
+            <div class="modal-body">
+                <p class="hint" style="margin-bottom: 1rem;">Add your Canvas, Outlook, or other ICS calendar URLs. Events will sync to your Google Calendar.</p>
+
+                <div class="form-field">
+                    <label for="sourceType">Source Type</label>
+                    <select id="sourceType">
+                        <option value="canvas">Canvas (LMS)</option>
+                        <option value="outlook">Outlook Calendar</option>
+                        <option value="ics">Other ICS Feed</option>
+                    </select>
+                </div>
+                <div class="form-field">
+                    <label for="sourceName">Display Name *</label>
+                    <input type="text" id="sourceName" placeholder="e.g., Harvard Canvas, Work Outlook">
+                </div>
+                <div class="form-field">
+                    <label for="sourceUrl">Calendar URL *</label>
+                    <input type="url" id="sourceUrl" placeholder="https://canvas.harvard.edu/feeds/calendars/...">
+                    <p class="hint" id="sourceUrlHint">Find your Canvas calendar URL in Canvas → Calendar → Calendar Feed</p>
+                </div>
+                <button class="btn btn-primary" onclick="addCalendarSource()" style="margin-bottom: 1.5rem;">
+                    <span class="icon">➕</span> Add Source
+                </button>
+
+                <div class="form-divider"></div>
+
+                <h3 style="margin-top: 1rem;">Your Calendar Sources</h3>
+                <div id="calendarSourcesList" class="sources-list">
+                    <p class="hint">No calendar sources configured yet.</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="hideCalendarSourcesModal()">Close</button>
+                <button class="btn btn-success" onclick="syncUserSources(); hideCalendarSourcesModal();">
+                    <span class="icon">🔄</span> Sync All Now
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=5"></script>
 </body>
 </html>

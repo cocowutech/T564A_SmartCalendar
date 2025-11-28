@@ -479,3 +479,84 @@ class IcsIngestionService:
         except Exception:  # pragma: no cover - fallback for invalid tz
             logger.warning("Unknown timezone '%s', defaulting to UTC", timezone_name)
             return ZoneInfo("UTC")
+
+    async def sync_user_ics_source(
+        self,
+        *,
+        source,  # IcsSource from user_config
+        session_id: str,
+        settings: Settings,
+    ) -> dict:
+        """
+        Sync a user's ICS source to their Google Calendar.
+
+        This method uses session-based authentication to sync to the specific
+        user's Google Calendar, supporting multi-user deployment.
+        """
+        from core.user_config import IcsSource
+
+        # Create a session-specific calendar service
+        user_calendar_service = GoogleCalendarService(session_id=session_id)
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(source.url)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.exception("Failed to fetch ICS feed", extra={"url": source.url})
+            return {"events_synced": 0, "error": str(exc)}
+
+        try:
+            calendar = Calendar.from_ical(response.content)
+        except Exception as exc:
+            logger.exception("Failed to parse ICS feed", extra={"url": source.url})
+            return {"events_synced": 0, "error": f"Invalid ICS data: {exc}"}
+
+        timezone = self._get_timezone(settings.timezone)
+        synced = 0
+        errors = []
+
+        for component in calendar.walk():
+            if component.name != "VEVENT":
+                continue
+
+            try:
+                payload = self._build_event_payload(component, timezone)
+            except ValueError as exc:
+                summary = str(component.get('summary', 'Untitled')).strip() or 'Untitled'
+                errors.append(f"{summary}: {exc}")
+                continue
+
+            event_id = self._generate_event_id(source.name, payload['uid'])
+
+            # Determine display name for the event
+            display_name = source.name
+            if source.source_type == "canvas":
+                display_name = f"[{source.name}]"
+            elif source.source_type == "outlook":
+                display_name = f"[{source.name}]"
+            else:
+                display_name = f"[{source.name}]"
+
+            try:
+                await user_calendar_service.create_or_update_event(
+                    settings=settings,
+                    summary=f"{display_name} {payload['summary']}",
+                    start_time=payload['start'],
+                    end_time=payload['end'],
+                    description=payload.get('description'),
+                    location=payload.get('location'),
+                    all_day=payload['all_day'],
+                    event_id=event_id,
+                )
+                synced += 1
+            except Exception as exc:
+                logger.warning(f"Failed to sync event '{payload['summary']}': {exc}")
+                errors.append(f"{payload['summary']}: {str(exc)}")
+                continue
+
+        return {
+            "events_synced": synced,
+            "source_name": source.name,
+            "errors": errors if errors else None,
+        }
