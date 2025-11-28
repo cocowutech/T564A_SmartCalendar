@@ -1,12 +1,13 @@
 from datetime import date, datetime, time, timedelta
 import re
-from typing import List
+from typing import List, Optional
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from core.config import Settings, get_settings
+from core.session import get_session_id
 from services.google_calendar import GoogleCalendarService
 from services.ingestion import GmailIngestionService, IcsIngestionService
 from services.recurrence import (
@@ -18,6 +19,12 @@ from services.recurrence import (
 from services.voice import VoiceService
 
 router = APIRouter()
+
+
+def get_calendar_service(request: Request) -> GoogleCalendarService:
+    """Get GoogleCalendarService with session context."""
+    session_id = get_session_id(request)
+    return GoogleCalendarService(session_id=session_id)
 
 # Create singleton instance of VoiceService to maintain session state
 _voice_service_instance = None
@@ -56,8 +63,8 @@ async def get_calendar_presets(
 
 @router.get("/events")
 async def get_events(
+    request: Request,
     settings: Settings = Depends(get_settings),
-    calendar_service: GoogleCalendarService = Depends(GoogleCalendarService),
     ics_service: IcsIngestionService = Depends(IcsIngestionService),
 ) -> dict:
     """
@@ -66,6 +73,7 @@ async def get_events(
     Canvas and Outlook events are fetched directly from ICS feeds (not from Google Calendar)
     and merged with Google Calendar events in the response.
     """
+    calendar_service = get_calendar_service(request)
     now = datetime.utcnow()
 
     # Fetch Google Calendar events
@@ -186,15 +194,16 @@ async def sync_all(
 
 @router.post("/events/delete")
 async def delete_event(
+    request: Request,
     payload: dict,
     settings: Settings = Depends(get_settings),
-    calendar_service: GoogleCalendarService = Depends(GoogleCalendarService),
 ) -> dict:
     """
     Delete an event from Google Calendar.
 
     Prevents deletion of Canvas-sourced events.
     """
+    calendar_service = get_calendar_service(request)
     event_id = payload.get('event_id')
     event_title = payload.get('title', '')
     event_source = payload.get('source', '')
@@ -232,10 +241,11 @@ async def delete_event(
 
 @router.post("/events/update")
 async def update_event(
+    request: Request,
     payload: dict,
     settings: Settings = Depends(get_settings),
-    calendar_service: GoogleCalendarService = Depends(GoogleCalendarService),
 ) -> dict:
+    calendar_service = get_calendar_service(request)
     try:
         event_id = payload.get("event_id")
         if not event_id:
@@ -480,13 +490,14 @@ def _build_recurrence_rule(
 
 @router.post("/events/create")
 async def create_event(
+    request: Request,
     payload: dict,
     settings: Settings = Depends(get_settings),
-    calendar_service: GoogleCalendarService = Depends(GoogleCalendarService),
 ) -> dict:
     """
     Create a new event in Google Calendar.
     """
+    calendar_service = get_calendar_service(request)
     try:
         summary = payload.get('summary')
         start_time_str = payload.get('start_time')
@@ -602,9 +613,9 @@ async def create_event(
 
 @router.post("/events/batch_import")
 async def batch_import_events(
+    request: Request,
     payload: dict,
     settings: Settings = Depends(get_settings),
-    calendar_service: GoogleCalendarService = Depends(GoogleCalendarService),
 ) -> dict:
     """
     Import multiple events from CSV/Excel data.
@@ -625,6 +636,7 @@ async def batch_import_events(
         ]
     }
     """
+    calendar_service = get_calendar_service(request)
     try:
         events_data = payload.get('events', [])
 

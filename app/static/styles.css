@@ -1908,3 +1908,108 @@ body {
         opacity: 0.7;
     }
 }
+
+/* =========================================================================
+   Login Screen
+   ========================================================================= */
+
+#loginScreen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9999;
+    background: linear-gradient(135deg, #0073ea 0%, #0060c7 50%, #5034aa 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.login-container {
+    width: 100%;
+    max-width: 440px;
+    padding: 1.5rem;
+}
+
+.login-card {
+    background: var(--surface);
+    border-radius: var(--radius-xl);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+    overflow: hidden;
+}
+
+.login-header {
+    background: var(--surface-alt);
+    padding: 2rem 2rem 1.5rem;
+    text-align: center;
+    border-bottom: 1px solid var(--border);
+}
+
+.login-header h1 {
+    font-size: 1.75rem;
+    font-weight: 800;
+    color: var(--primary);
+    margin-bottom: 0.25rem;
+}
+
+.login-header p {
+    color: var(--text-muted);
+    font-size: 0.9375rem;
+}
+
+.login-body {
+    padding: 2rem;
+    text-align: center;
+}
+
+.login-body > p {
+    margin-bottom: 0.75rem;
+    color: var(--text-secondary);
+    font-size: 1rem;
+}
+
+.login-note {
+    font-size: 0.8125rem !important;
+    color: var(--text-muted) !important;
+    margin-bottom: 1.5rem !important;
+}
+
+.login-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 0.875rem 1.5rem;
+    font-size: 1rem;
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: var(--radius);
+    background: var(--primary);
+    color: white;
+    transition: all 0.2s ease;
+}
+
+.login-btn:hover {
+    background: var(--primary-dark);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 20px rgba(0, 115, 234, 0.4);
+}
+
+.btn-lg {
+    padding: 0.875rem 1.5rem;
+    font-size: 1rem;
+}
+
+.login-footer {
+    padding: 1rem 2rem;
+    background: var(--surface-alt);
+    border-top: 1px solid var(--border);
+    text-align: center;
+}
+
+.login-footer p {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin: 0;
+}

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import os.path
 import pickle
 import re
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+from google_auth_oauthlib.flow import InstalledAppFlow, Flow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from zoneinfo import ZoneInfo
 
 from core.config import Settings
+from core.session import get_user_token_path
 
 logger = logging.getLogger(__name__)
 
@@ -28,18 +32,103 @@ SCOPES = [
 class GoogleCalendarService:
     """Service for interacting with Google Calendar API."""
 
-    def __init__(self):
+    def __init__(self, session_id: Optional[str] = None):
         self._credentials = None
         self._calendar_service = None
+        self._session_id = session_id
+
+    def _get_token_file(self, settings: Settings) -> Path:
+        """Get the token file path - per-user if session_id is set."""
+        if self._session_id:
+            # Multi-user mode: use session-specific token
+            return get_user_token_path(self._session_id)
+        else:
+            # Single-user mode (local development): use default token dir
+            token_dir = Path(settings.google_token_dir).expanduser()
+            token_dir.mkdir(parents=True, exist_ok=True)
+            return token_dir / 'token.pickle'
+
+    def has_valid_credentials(self, settings: Settings) -> bool:
+        """Check if user has valid credentials without triggering auth flow."""
+        token_file = self._get_token_file(settings)
+        if not token_file.exists():
+            return False
+
+        try:
+            with open(token_file, 'rb') as f:
+                creds = pickle.load(f)
+            if creds and creds.valid:
+                return True
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+                with open(token_file, 'wb') as f:
+                    pickle.dump(creds, f)
+                return True
+        except Exception:
+            return False
+        return False
+
+    def get_auth_url(self, settings: Settings, redirect_uri: str) -> str:
+        """Generate OAuth authorization URL for web-based flow."""
+        client_secrets = settings.get_client_secrets_path()
+
+        # Load client secrets and check type
+        with open(client_secrets, 'r') as f:
+            secrets_data = json.load(f)
+
+        # Determine if web or installed app credentials
+        if 'web' in secrets_data:
+            flow = Flow.from_client_secrets_file(
+                client_secrets,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri
+            )
+        else:
+            # For installed app credentials, we need to use a special redirect
+            flow = Flow.from_client_secrets_file(
+                client_secrets,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri
+            )
+
+        auth_url, _ = flow.authorization_url(
+            access_type='offline',
+            include_granted_scopes='true',
+            prompt='consent'
+        )
+        return auth_url
+
+    def exchange_code(self, settings: Settings, code: str, redirect_uri: str) -> bool:
+        """Exchange authorization code for credentials."""
+        try:
+            client_secrets = settings.get_client_secrets_path()
+
+            flow = Flow.from_client_secrets_file(
+                client_secrets,
+                scopes=SCOPES,
+                redirect_uri=redirect_uri
+            )
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+
+            # Save credentials
+            token_file = self._get_token_file(settings)
+            token_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(token_file, 'wb') as f:
+                pickle.dump(creds, f)
+
+            self._credentials = creds
+            return True
+        except Exception as e:
+            logger.error(f"Failed to exchange OAuth code: {e}")
+            return False
 
     def _get_credentials(self, settings: Settings) -> Credentials:
         """Get or refresh Google OAuth credentials."""
         if self._credentials and self._credentials.valid:
             return self._credentials
 
-        token_dir = Path(settings.google_token_dir).expanduser()
-        token_dir.mkdir(parents=True, exist_ok=True)
-        token_file = token_dir / 'token.pickle'
+        token_file = self._get_token_file(settings)
 
         creds = None
         # Token file stores the user's access and refresh tokens
@@ -62,15 +151,22 @@ class GoogleCalendarService:
                     except OSError:
                         logger.exception("Failed to delete invalid Google token cache at %s", token_file)
                     creds = None
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    settings.google_client_secrets, SCOPES
-                )
-                creds = flow.run_local_server(port=0)
+
+            if not creds:
+                # In web mode, we can't use local server flow
+                if self._session_id:
+                    raise ValueError("User needs to authenticate via OAuth flow")
+                else:
+                    # Local development fallback
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        settings.get_client_secrets_path(), SCOPES
+                    )
+                    creds = flow.run_local_server(port=0)
 
             # Save the credentials for the next run
-            with open(token_file, 'wb') as token:
-                pickle.dump(creds, token)
+            if creds:
+                with open(token_file, 'wb') as token:
+                    pickle.dump(creds, token)
 
         self._credentials = creds
         return creds
@@ -81,6 +177,19 @@ class GoogleCalendarService:
             creds = self._get_credentials(settings)
             self._calendar_service = build('calendar', 'v3', credentials=creds)
         return self._calendar_service
+
+    def logout(self, settings: Settings) -> bool:
+        """Remove user's stored credentials."""
+        try:
+            token_file = self._get_token_file(settings)
+            if token_file.exists():
+                token_file.unlink()
+            self._credentials = None
+            self._calendar_service = None
+            return True
+        except Exception as e:
+            logger.error(f"Failed to logout: {e}")
+            return False
 
     async def list_events(
         self,

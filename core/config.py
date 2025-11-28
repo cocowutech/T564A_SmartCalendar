@@ -84,8 +84,11 @@ class AppConfig(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="allow")
 
-    google_client_secrets: str = Field(..., alias="GOOGLE_OAUTH_CLIENT_SECRETS")
-    google_token_dir: str = Field(..., alias="GOOGLE_TOKEN_DIR")
+    # Google OAuth - can be file path OR JSON content directly
+    google_client_secrets: str = Field(default="./client_secret.json", alias="GOOGLE_OAUTH_CLIENT_SECRETS")
+    # For production: store JSON content in this env var
+    google_client_secrets_json: str | None = Field(default=None, alias="GOOGLE_OAUTH_CLIENT_SECRETS_JSON")
+    google_token_dir: str = Field(default="./user_tokens", alias="GOOGLE_TOKEN_DIR")
     google_calendar_id: str = Field(default="primary", alias="GOOGLE_CALENDAR_ID")
     timezone: str = Field(default="America/New_York", alias="TIMEZONE")
 
@@ -93,6 +96,30 @@ class Settings(BaseSettings):
     maps_api_key: str | None = Field(default=None, alias="MAPS_API_KEY")
 
     config_path: str = Field(default="config.yaml", alias="APP_CONFIG_PATH")
+
+    def get_client_secrets_path(self) -> str:
+        """Get the path to client secrets file, creating from JSON env var if needed."""
+        import json
+        import tempfile
+        import os
+
+        # If JSON content is provided via env var, write it to a temp file
+        if self.google_client_secrets_json:
+            # Create a persistent temp file for the session
+            secrets_dir = Path(tempfile.gettempdir()) / "smart-calendar"
+            secrets_dir.mkdir(exist_ok=True)
+            secrets_file = secrets_dir / "client_secrets.json"
+
+            # Write the JSON content
+            with open(secrets_file, 'w') as f:
+                # Parse and re-serialize to validate JSON
+                secrets_data = json.loads(self.google_client_secrets_json)
+                json.dump(secrets_data, f)
+
+            return str(secrets_file)
+
+        # Otherwise use the file path
+        return self.google_client_secrets
 
     _app_config: AppConfig | None = None
     _app_config_mtime: float | None = None
