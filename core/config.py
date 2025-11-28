@@ -102,23 +102,45 @@ class Settings(BaseSettings):
         import json
         import tempfile
         import os
+        import logging
+
+        logger = logging.getLogger(__name__)
 
         # If JSON content is provided via env var, write it to a temp file
         if self.google_client_secrets_json:
+            logger.info("Using GOOGLE_OAUTH_CLIENT_SECRETS_JSON env var")
             # Create a persistent temp file for the session
             secrets_dir = Path(tempfile.gettempdir()) / "smart-calendar"
             secrets_dir.mkdir(exist_ok=True)
             secrets_file = secrets_dir / "client_secrets.json"
 
-            # Write the JSON content
-            with open(secrets_file, 'w') as f:
+            try:
                 # Parse and re-serialize to validate JSON
                 secrets_data = json.loads(self.google_client_secrets_json)
-                json.dump(secrets_data, f)
 
-            return str(secrets_file)
+                # Validate it has expected structure
+                if 'web' not in secrets_data and 'installed' not in secrets_data:
+                    raise ValueError(
+                        "Invalid OAuth credentials JSON: must contain 'web' or 'installed' key. "
+                        "Make sure you're using the full JSON content from client_secret.json"
+                    )
+
+                # Write the JSON content
+                with open(secrets_file, 'w') as f:
+                    json.dump(secrets_data, f)
+
+                logger.info(f"OAuth secrets written to {secrets_file}")
+                return str(secrets_file)
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse GOOGLE_OAUTH_CLIENT_SECRETS_JSON: {e}")
+                raise ValueError(
+                    f"GOOGLE_OAUTH_CLIENT_SECRETS_JSON is not valid JSON: {e}. "
+                    "Make sure to copy the entire content of client_secret.json without modification."
+                )
 
         # Otherwise use the file path
+        logger.info(f"Using client secrets file: {self.google_client_secrets}")
         return self.google_client_secrets
 
     _app_config: AppConfig | None = None

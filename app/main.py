@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 
@@ -9,6 +10,8 @@ from app.api import get_api_router
 from core.config import get_settings
 from core.session import get_session_id, set_session_cookie, create_session_id, clear_session_cookie
 from services.google_calendar import GoogleCalendarService
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Smart Calendar Agent", version="0.1.0")
 
@@ -58,24 +61,73 @@ async def auth_status(request: Request):
     return JSONResponse({"authenticated": is_authenticated, "sessionId": session_id[:8]})
 
 
+@app.get("/api/auth/debug")
+async def auth_debug():
+    """Debug endpoint to check OAuth configuration (no sensitive data exposed)."""
+    settings = get_settings()
+
+    config_info = {
+        "has_json_env_var": bool(settings.google_client_secrets_json),
+        "json_env_var_length": len(settings.google_client_secrets_json) if settings.google_client_secrets_json else 0,
+        "file_path_setting": settings.google_client_secrets,
+        "environment": os.environ.get("ENVIRONMENT", "not_set"),
+    }
+
+    # Try to get the secrets path and check if it's valid
+    try:
+        secrets_path = settings.get_client_secrets_path()
+        config_info["resolved_secrets_path"] = secrets_path
+        config_info["secrets_file_exists"] = Path(secrets_path).exists()
+
+        # Check JSON structure (without exposing secrets)
+        if Path(secrets_path).exists():
+            import json
+            with open(secrets_path) as f:
+                data = json.load(f)
+            config_info["json_has_web_key"] = "web" in data
+            config_info["json_has_installed_key"] = "installed" in data
+            if "web" in data:
+                config_info["has_client_id"] = "client_id" in data["web"]
+                config_info["has_client_secret"] = "client_secret" in data["web"]
+                config_info["has_redirect_uris"] = "redirect_uris" in data["web"]
+    except Exception as e:
+        config_info["error"] = str(e)
+        config_info["error_type"] = type(e).__name__
+
+    return JSONResponse(config_info)
+
+
 @app.get("/api/auth/login")
 async def auth_login(request: Request):
     """Start OAuth flow - redirect to Google."""
-    response = Response()
-    session_id = get_session_id(request)
-    if not session_id:
-        session_id = create_session_id()
-        set_session_cookie(response, session_id)
+    try:
+        response = Response()
+        session_id = get_session_id(request)
+        if not session_id:
+            session_id = create_session_id()
+            set_session_cookie(response, session_id)
 
-    settings = get_settings()
-    calendar_service = GoogleCalendarService(session_id=session_id)
+        settings = get_settings()
 
-    base_url = get_base_url(request)
-    redirect_uri = f"{base_url}/api/auth/callback"
+        # Debug: Check if OAuth JSON is configured
+        has_json = bool(settings.google_client_secrets_json)
+        logger.info(f"OAuth config check - has JSON env var: {has_json}")
 
-    auth_url = calendar_service.get_auth_url(settings, redirect_uri)
+        calendar_service = GoogleCalendarService(session_id=session_id)
 
-    return RedirectResponse(url=auth_url)
+        base_url = get_base_url(request)
+        redirect_uri = f"{base_url}/api/auth/callback"
+        logger.info(f"OAuth redirect URI: {redirect_uri}")
+
+        auth_url = calendar_service.get_auth_url(settings, redirect_uri)
+
+        return RedirectResponse(url=auth_url)
+    except Exception as e:
+        logger.exception(f"OAuth login failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "type": type(e).__name__}
+        )
 
 
 @app.get("/api/auth/callback")
