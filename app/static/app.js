@@ -2704,7 +2704,7 @@ function getEventsForCurrentWeek() {
         .sort((a, b) => a.start - b.start);
 }
 
-function printWeeklyCalendar() {
+async function printWeeklyCalendar() {
     document.body.classList.add('print-week');
 
     const finishPrint = () => {
@@ -2713,6 +2713,13 @@ function printWeeklyCalendar() {
     };
 
     window.addEventListener('afterprint', finishPrint);
+
+    // Wait for fonts to load (including Chinese font) before printing
+    try {
+        await document.fonts.ready;
+    } catch (e) {
+        console.log('Font loading check failed, proceeding anyway');
+    }
 
     requestAnimationFrame(() => {
         window.print();
