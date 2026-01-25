@@ -50,7 +50,7 @@ html, body {
 }
 
 body {
-    font-family: 'Figtree', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: 'Figtree', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     background: var(--background);
     color: var(--text-primary);
     line-height: 1.5;
@@ -1543,7 +1543,8 @@ body {
 @media print {
     body {
         background: white;
-        font-family: 'Figtree', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        /* System fonts for Chinese support in print - placed first for priority */
+        font-family: 'PingFang SC', 'Microsoft YaHei', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', 'Noto Sans SC', 'Figtree', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         -webkit-print-color-adjust: exact;
         print-color-adjust: exact;
     }
@@ -1554,7 +1555,7 @@ body {
 
     /* Ensure Chinese characters render correctly */
     * {
-        font-family: inherit;
+        font-family: inherit !important;
     }
 }
 
