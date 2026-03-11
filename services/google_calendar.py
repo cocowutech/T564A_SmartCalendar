@@ -100,8 +100,13 @@ class GoogleCalendarService:
 
     def exchange_code(self, settings: Settings, code: str, redirect_uri: str) -> bool:
         """Exchange authorization code for credentials."""
+        return self.exchange_code_with_detail(settings, code, redirect_uri) is None
+
+    def exchange_code_with_detail(self, settings: Settings, code: str, redirect_uri: str):
+        """Exchange authorization code for credentials. Returns None on success, error string on failure."""
         try:
             client_secrets = settings.get_client_secrets_path()
+            logger.info(f"Exchanging OAuth code with redirect_uri={redirect_uri}")
 
             flow = Flow.from_client_secrets_file(
                 client_secrets,
@@ -118,10 +123,10 @@ class GoogleCalendarService:
                 pickle.dump(creds, f)
 
             self._credentials = creds
-            return True
+            return None
         except Exception as e:
             logger.error(f"Failed to exchange OAuth code: {e}")
-            return False
+            return str(e)
 
     def _get_credentials(self, settings: Settings) -> Credentials:
         """Get or refresh Google OAuth credentials."""

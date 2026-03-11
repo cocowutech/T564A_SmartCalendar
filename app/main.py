@@ -67,9 +67,10 @@ async def auth_status(request: Request):
 
 
 @app.get("/api/auth/debug")
-async def auth_debug():
+async def auth_debug(request: Request):
     """Debug endpoint to check OAuth configuration (no sensitive data exposed)."""
     settings = get_settings()
+    base_url = get_base_url(request)
 
     # Check if JSON is in the main var
     main_var_is_json = bool(
@@ -84,6 +85,12 @@ async def auth_debug():
             "GOOGLE_OAUTH_CLIENT_SECRETS (auto-detected)" if main_var_is_json else "none"
         ),
         "environment": os.environ.get("ENVIRONMENT", "not_set"),
+        "computed_base_url": base_url,
+        "computed_redirect_uri": f"{base_url}/api/auth/callback",
+        "x_forwarded_proto": request.headers.get("x-forwarded-proto", "not_set"),
+        "x_forwarded_host": request.headers.get("x-forwarded-host", "not_set"),
+        "host_header": request.headers.get("host", "not_set"),
+        "request_base_url": str(request.base_url),
     }
 
     # Try to get the secrets path and check if it's valid
@@ -162,10 +169,15 @@ async def auth_callback(request: Request, code: str = None, error: str = None):
 
     base_url = get_base_url(request)
     redirect_uri = f"{base_url}/api/auth/callback"
+    logger.info(f"OAuth callback: base_url={base_url}, redirect_uri={redirect_uri}")
 
-    success = calendar_service.exchange_code(settings, code, redirect_uri)
+    error_detail = calendar_service.exchange_code_with_detail(settings, code, redirect_uri)
 
-    response = RedirectResponse(url="/?auth_success=true" if success else "/?auth_error=exchange_failed")
+    if error_detail is None:
+        response = RedirectResponse(url="/?auth_success=true")
+    else:
+        import urllib.parse
+        response = RedirectResponse(url=f"/?auth_error={urllib.parse.quote(error_detail)}")
     set_session_cookie(response, session_id)
     return response
 
