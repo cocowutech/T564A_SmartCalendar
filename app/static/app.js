@@ -3170,13 +3170,57 @@ function renderSimpleTodoList(dateKey) {
         return;
     }
 
+    let dragSrcId = null;
+
     todos.forEach(todo => {
         const li = document.createElement('li');
         li.className = 'simple-todo-item';
         li.dataset.todoId = todo.id;
+        li.draggable = true;
         if (todo.completed) {
             li.classList.add('completed');
         }
+
+        // Drag handle
+        const dragHandle = document.createElement('span');
+        dragHandle.className = 'simple-todo-drag-handle';
+        dragHandle.textContent = '⠿';
+        dragHandle.setAttribute('aria-hidden', 'true');
+        dragHandle.title = 'Drag to reorder';
+
+        li.addEventListener('dragstart', (e) => {
+            dragSrcId = todo.id;
+            li.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', todo.id);
+        });
+        li.addEventListener('dragend', () => {
+            li.classList.remove('dragging');
+            list.querySelectorAll('.simple-todo-item').forEach(el => el.classList.remove('drag-over'));
+        });
+        li.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            list.querySelectorAll('.simple-todo-item').forEach(el => el.classList.remove('drag-over'));
+            if (todo.id !== dragSrcId) li.classList.add('drag-over');
+        });
+        li.addEventListener('dragleave', () => {
+            li.classList.remove('drag-over');
+        });
+        li.addEventListener('drop', (e) => {
+            e.preventDefault();
+            li.classList.remove('drag-over');
+            if (!dragSrcId || dragSrcId === todo.id) return;
+            const dateKey = currentTodoDateKey || new Date().toISOString().split('T')[0];
+            const allTodos = loadTodosForDate(dateKey);
+            const srcIdx = allTodos.findIndex(t => t.id === dragSrcId);
+            const dstIdx = allTodos.findIndex(t => t.id === todo.id);
+            if (srcIdx === -1 || dstIdx === -1) return;
+            const [moved] = allTodos.splice(srcIdx, 1);
+            allTodos.splice(dstIdx, 0, moved);
+            saveTodosForDate(dateKey, allTodos);
+            renderSimpleTodoList(dateKey);
+        });
 
         const label = document.createElement('label');
 
@@ -3209,6 +3253,7 @@ function renderSimpleTodoList(dateKey) {
         deleteBtn.setAttribute('aria-label', `Remove "${todo.text}"`);
         deleteBtn.textContent = '×';
 
+        li.appendChild(dragHandle);
         li.appendChild(label);
         actions.appendChild(editBtn);
         actions.appendChild(deleteBtn);

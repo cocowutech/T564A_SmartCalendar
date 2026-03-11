@@ -1719,6 +1719,32 @@ body {
     color: var(--red);
 }
 
+.simple-todo-drag-handle {
+    color: var(--text-muted);
+    cursor: grab;
+    font-size: 1rem;
+    padding: 0 2px;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.simple-todo-drag-handle:active {
+    cursor: grabbing;
+}
+
+.simple-todo-item[draggable="true"] {
+    cursor: default;
+}
+
+.simple-todo-item.dragging {
+    opacity: 0.4;
+}
+
+.simple-todo-item.drag-over {
+    border-color: var(--primary);
+    background: var(--primary-light, #e8f0fe);
+}
+
 .simple-events {
     display: flex;
     flex-direction: column;

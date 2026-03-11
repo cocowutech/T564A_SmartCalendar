@@ -7,7 +7,7 @@
     <!-- Preload Chinese font for print support -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="/static/styles.css?v=8">
+    <link rel="stylesheet" href="/static/styles.css?v=9">
 </head>
 <body>
     <div class="app-shell">
@@ -57,25 +57,6 @@
                     <div class="filter-list" id="courseFilterList">
                         <!-- Dynamically populated with course checkboxes -->
                     </div>
-                </section>
-
-                <section class="panel-card">
-                    <h2>Add Smart Activity</h2>
-                    <p class="hint">Create structured recurring plans with natural language or form input.</p>
-                    <div class="panel-field">
-                        <label for="voiceInput">Describe your activity</label>
-                        <div class="voice-inline">
-                            <textarea id="voiceInput" placeholder="I want a 2 hour study session every Wednesday evening."></textarea>
-                            <button id="micButton" class="mic-button" onclick="toggleVoiceRecognition()" title="Speak command">
-                                <span id="micIcon">🎤</span>
-                            </button>
-                        </div>
-                        <div id="voiceStatus" class="voice-status"></div>
-                    </div>
-                    <div class="voice-actions">
-                        <button class="btn btn-primary btn-block" onclick="addRecurringEvent()">Generate Suggestions</button>
-                    </div>
-                    <div id="voiceResult" class="result"></div>
                 </section>
 
                 <!-- Batch Import - Hidden per user request -->
@@ -432,6 +413,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=5"></script>
+    <script src="/static/app.js?v=6"></script>
 </body>
 </html>
