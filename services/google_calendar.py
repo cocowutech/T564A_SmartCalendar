@@ -23,6 +23,9 @@ from core.session import get_user_token_path
 
 logger = logging.getLogger(__name__)
 
+# Module-level storage for pending OAuth flows (preserves code_verifier for PKCE)
+_pending_flows: dict[str, "Flow"] = {}
+
 SCOPES = [
     'https://www.googleapis.com/auth/calendar',
     'https://www.googleapis.com/auth/gmail.readonly'
@@ -96,6 +99,11 @@ class GoogleCalendarService:
             include_granted_scopes='true',
             prompt='consent'
         )
+
+        # Store flow so the callback can reuse it (preserves PKCE code_verifier)
+        if self._session_id:
+            _pending_flows[self._session_id] = flow
+
         return auth_url
 
     def exchange_code(self, settings: Settings, code: str, redirect_uri: str) -> bool:
@@ -108,11 +116,17 @@ class GoogleCalendarService:
             client_secrets = settings.get_client_secrets_path()
             logger.info(f"Exchanging OAuth code with redirect_uri={redirect_uri}")
 
-            flow = Flow.from_client_secrets_file(
-                client_secrets,
-                scopes=SCOPES,
-                redirect_uri=redirect_uri
-            )
+            # Reuse the stored flow to preserve the PKCE code_verifier
+            flow = _pending_flows.pop(self._session_id, None) if self._session_id else None
+            if flow is None:
+                flow = Flow.from_client_secrets_file(
+                    client_secrets,
+                    scopes=SCOPES,
+                    redirect_uri=redirect_uri
+                )
+            else:
+                flow.redirect_uri = redirect_uri
+
             flow.fetch_token(code=code)
             creds = flow.credentials
 
