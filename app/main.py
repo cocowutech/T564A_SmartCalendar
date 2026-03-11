@@ -25,14 +25,19 @@ app.include_router(get_api_router())
 
 def get_base_url(request: Request) -> str:
     """Get the base URL for OAuth redirects."""
-    # Check for forwarded headers (when behind a proxy/load balancer)
-    forwarded_proto = request.headers.get("x-forwarded-proto", "http")
-    forwarded_host = request.headers.get("x-forwarded-host")
+    # Prefer explicit env var (e.g. RAILWAY_PUBLIC_DOMAIN set by user)
+    public_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN") or os.environ.get("PUBLIC_DOMAIN")
+    if public_domain:
+        return f"https://{public_domain}"
 
-    if forwarded_host:
+    # Check for forwarded headers (when behind a proxy/load balancer)
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+
+    if forwarded_proto and forwarded_host:
         return f"{forwarded_proto}://{forwarded_host}"
 
-    # Fallback to request URL
+    # Fallback to request URL (works correctly when --proxy-headers is set)
     return str(request.base_url).rstrip("/")
 
 
