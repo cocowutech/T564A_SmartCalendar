@@ -273,54 +273,6 @@ body {
     letter-spacing: 0.03em;
 }
 
-.voice-inline {
-    display: flex;
-    gap: 0.5rem;
-}
-
-.voice-inline textarea {
-    flex: 1;
-    min-height: 100px;
-    padding: 0.75rem;
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    resize: vertical;
-    font-family: inherit;
-    font-size: 0.875rem;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease;
-}
-
-.voice-inline textarea:focus {
-    outline: none;
-    border-color: var(--primary);
-    box-shadow: 0 0 0 3px var(--primary-light);
-}
-
-.mic-button {
-    width: 44px;
-    min-width: 44px;
-    border: none;
-    border-radius: var(--radius);
-    background: var(--surface-alt);
-    color: var(--primary);
-    font-size: 1.125rem;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s ease;
-}
-
-.mic-button:hover {
-    background: var(--primary-light);
-    transform: scale(1.05);
-}
-
-.voice-actions {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 0.5rem;
-}
 
 /* =========================================================================
    Buttons - Monday.com Style
@@ -1102,11 +1054,6 @@ body {
     letter-spacing: 0.03em;
 }
 
-.voice-status {
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    min-height: 1rem;
-}
 
 .loading {
     opacity: 0.6;

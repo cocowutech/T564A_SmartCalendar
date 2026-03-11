@@ -15,8 +15,6 @@ const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 // Global state
 let autoSyncTimer = null;
 let autoSyncIntervalMinutes = 15;
-let recognition = null;
-let isRecording = false;
 let selectedDate = new Date();
 let events = [];
 let suggestionsCount = 0;
@@ -1298,253 +1296,6 @@ function getLastSyncTime() {
     return 'Never';
 }
 
-// ---------------------------------------------------------------------------
-// Voice & AI actions
-// ---------------------------------------------------------------------------
-
-function initVoiceRecognition() {
-    if (!('webkitSpeechRecognition' in window || 'SpeechRecognition' in window)) {
-        document.getElementById('voiceSupport').textContent = 'Unsupported';
-        return;
-    }
-
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    recognition = new SpeechRecognition();
-    recognition.continuous = false;
-    recognition.interimResults = true;
-    recognition.lang = 'en-US';
-
-    recognition.onstart = () => {
-        isRecording = true;
-        document.getElementById('micIcon').textContent = '⏺️';
-        document.getElementById('voiceStatus').textContent = 'Listening...';
-    };
-
-    recognition.onresult = (event) => {
-        const transcript = Array.from(event.results)
-            .map(result => result[0])
-            .map(result => result.transcript)
-            .join('');
-        document.getElementById('voiceInput').value = transcript;
-    };
-
-    recognition.onend = () => {
-        isRecording = false;
-        document.getElementById('micIcon').textContent = '🎤';
-        document.getElementById('voiceStatus').textContent = 'Tap to start recording again.';
-    };
-
-    recognition.onerror = (event) => {
-        isRecording = false;
-        document.getElementById('micIcon').textContent = '🎤';
-        document.getElementById('voiceStatus').textContent = `Error: ${event.error}`;
-    };
-
-    document.getElementById('voiceSupport').textContent = 'Supported';
-}
-
-function toggleVoiceRecognition() {
-    if (!recognition) {
-        initVoiceRecognition();
-        if (!recognition) return;
-    }
-
-    if (isRecording) {
-        recognition.stop();
-    } else {
-        recognition.start();
-    }
-}
-
-async function addRecurringEvent() {
-    const input = document.getElementById('voiceInput').value;
-    if (!input.trim()) {
-        showToast('voiceResult', 'Please describe the event you want to create.', true);
-        return;
-    }
-
-    // Show loading state
-    const resultContainer = document.getElementById('voiceResult');
-    resultContainer.classList.add('show');
-    resultContainer.innerHTML = `
-        <div class="proposal-message" style="text-align: center; padding: 2rem;">
-            <div style="font-size: 2rem; margin-bottom: 1rem;">🤖</div>
-            <div>AI is analyzing your request and finding free time slots...</div>
-        </div>
-    `;
-
-    try {
-        const response = await apiCall('/voice/add', { text: input });
-
-        // Extract the actual result from the API response
-        const result = response.result || response;
-
-        if (result.requires_confirmation && result.proposals) {
-            // Show proposal selection UI
-            displayProposalSelection(result);
-            showToast('ingestResult', 'Suggestions generated! Select your preferred time slots below.', false);
-        } else if (result.reply) {
-            // Show direct response
-            resultContainer.innerHTML = `<div class="proposal-message">${escapeHtml(result.reply)}</div>`;
-            showToast('ingestResult', result.reply, !result.handled);
-        } else {
-            // Fallback: show JSON for debugging
-            resultContainer.innerHTML = `<pre>${JSON.stringify(result, null, 2)}</pre>`;
-            showToast('ingestResult', 'Request processed.', false);
-        }
-    } catch (error) {
-        resultContainer.innerHTML = '';
-        resultContainer.classList.remove('show');
-        showToast('voiceResult', `Failed to submit request: ${error.message}`, true);
-    }
-}
-
-function displayProposalSelection(result) {
-    const container = document.getElementById('voiceResult');
-    container.classList.add('show');
-
-    let html = `<div class="proposal-selection">`;
-    html += `<h3>📅 Select Time Slots</h3>`;
-    html += `<p class="proposal-message">${escapeHtml(result.reply)}</p>`;
-    html += `<div class="proposal-list" id="proposalList">`;
-
-    result.proposals.forEach((proposal, index) => {
-        // Parse the time to get start and end times
-        const startTime = proposal.time || '9:00 AM';
-
-        html += `
-            <div class="proposal-option" id="proposal-${index}" data-index="${index}">
-                <input type="checkbox" data-index="${index}" class="proposal-checkbox" onchange="toggleProposalSelection(${index})">
-                <div class="proposal-time">
-                    <span class="proposal-day">${escapeHtml(proposal.day)}</span>
-                    <span class="proposal-time-display">${escapeHtml(startTime)}</span>
-                </div>
-                <div class="proposal-adjust">
-                    <input type="time" class="time-input" id="time-${index}" value="${convertTo24Hour(startTime)}" title="Adjust time">
-                </div>
-            </div>
-        `;
-    });
-
-    html += `</div>`;
-    html += `<div class="proposal-actions">`;
-    html += `<span class="proposal-count" id="proposalCount">0 selected</span>`;
-    html += `<div class="proposal-buttons">`;
-    html += `<button class="btn btn-secondary" onclick="cancelProposals()">Cancel</button>`;
-    html += `<button class="btn btn-primary" onclick="confirmProposals('${result.session_id}')">Add to Calendar</button>`;
-    html += `</div>`;
-    html += `</div>`;
-    html += `</div>`;
-
-    container.innerHTML = html;
-
-    // Store session data for later use
-    window.currentProposalSession = {
-        session_id: result.session_id,
-        proposals: result.proposals
-    };
-}
-
-function toggleProposalSelection(index) {
-    const option = document.getElementById(`proposal-${index}`);
-    const checkbox = option.querySelector('input[type="checkbox"]');
-
-    if (checkbox.checked) {
-        option.classList.add('selected');
-    } else {
-        option.classList.remove('selected');
-    }
-
-    updateProposalCount();
-}
-
-function updateProposalCount() {
-    const checkboxes = document.querySelectorAll('.proposal-checkbox:checked');
-    const count = checkboxes.length;
-    const countEl = document.getElementById('proposalCount');
-    if (countEl) {
-        countEl.textContent = `${count} selected`;
-    }
-}
-
-function convertTo24Hour(time12h) {
-    // Convert "9:00 AM" to "09:00"
-    const match = time12h.match(/(\d+):(\d+)\s*(AM|PM)/i);
-    if (!match) return '09:00';
-
-    let [, hours, minutes, period] = match;
-    hours = parseInt(hours);
-
-    if (period.toUpperCase() === 'PM' && hours !== 12) {
-        hours += 12;
-    } else if (period.toUpperCase() === 'AM' && hours === 12) {
-        hours = 0;
-    }
-
-    return `${String(hours).padStart(2, '0')}:${minutes}`;
-}
-
-async function confirmProposals(sessionId) {
-    const checkboxes = document.querySelectorAll('.proposal-checkbox:checked');
-    const selectedIndices = Array.from(checkboxes).map(cb => parseInt(cb.dataset.index));
-
-    if (selectedIndices.length === 0) {
-        showToast('voiceResult', 'Please select at least one time slot.', true);
-        return;
-    }
-
-    // Collect adjusted times if any
-    const adjustedTimes = {};
-    selectedIndices.forEach(index => {
-        const timeInput = document.getElementById(`time-${index}`);
-        if (timeInput && timeInput.value) {
-            adjustedTimes[index] = timeInput.value;
-        }
-    });
-
-    try {
-        const result = await apiCall('/confirm', {
-            session_id: sessionId,
-            selected_indices: selectedIndices,
-            adjusted_times: adjustedTimes
-        });
-
-        if (result.result?.handled) {
-            document.getElementById('voiceResult').innerHTML = `
-                <div class="confirmation-success">
-                    <h3>✓ Success!</h3>
-                    <p>${escapeHtml(result.result.reply)}</p>
-                </div>
-            `;
-            showToast('ingestResult', result.result.reply, false);
-
-            // Refresh calendar to show new events
-            await loadRealEvents();
-
-            // Clear input after a delay
-            setTimeout(() => {
-                document.getElementById('voiceInput').value = '';
-                document.getElementById('voiceResult').innerHTML = '';
-                document.getElementById('voiceResult').classList.remove('show');
-            }, 3000);
-        } else {
-            const reason = result.result?.reason || result.reason || 'Failed to confirm events.';
-            showToast('voiceResult', reason, true);
-        }
-    } catch (error) {
-        showToast('voiceResult', `Failed to confirm: ${error.message}`, true);
-    }
-}
-
-function cancelProposals() {
-    document.getElementById('voiceResult').innerHTML = '';
-    document.getElementById('voiceResult').classList.remove('show');
-}
-
-async function suggestTime() {
-    // Redirect to addRecurringEvent for consistency
-    return await addRecurringEvent();
-}
 
 // ---------------------------------------------------------------------------
 // Sync flows
@@ -1821,7 +1572,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     renderTimeColumn();
     checkApiStatus();
-    initVoiceRecognition();
     await loadAcademicCalendarPresets();
     initializeRepeatControls();
     initializeTimeZoneUI();
@@ -1859,12 +1609,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         console.log('🔄 Auto-syncing Canvas and Google Calendar...');
         await autoSyncOnLoad();
     }, 1000); // Wait 1 second after page load to not block initial render
-
-    document.getElementById('voiceInput').addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && e.ctrlKey) {
-            suggestTime();
-        }
-    });
 
     const savedInterval = localStorage.getItem('autoSyncInterval');
     if (savedInterval) {
@@ -2333,12 +2077,12 @@ function addManualException() {
     const end = document.getElementById('exceptionEndDate')?.value;
 
     if (!start) {
-        showToast('voiceResult', 'Select a start date to skip.', true);
+        showToast('ingestResult', 'Select a start date to skip.', true);
         return;
     }
 
     if (end && end < start) {
-        showToast('voiceResult', 'Skip end date must be after the start date.', true);
+        showToast('ingestResult', 'Skip end date must be after the start date.', true);
         return;
     }
 
@@ -2366,7 +2110,7 @@ function addException(exception) {
         existing => existing.start === exception.start && (existing.end || existing.start) === (exception.end || exception.start),
     );
     if (duplicate) {
-        showToast('voiceResult', 'That skip is already listed.', true);
+        showToast('ingestResult', 'That skip is already listed.', true);
         return;
     }
 
@@ -2802,22 +2546,22 @@ async function submitManualEvent() {
     
     // Validation
     if (!title) {
-        showToast('voiceResult', 'Please enter an event title', true);
+        showToast('ingestResult', 'Please enter an event title', true);
         return;
     }
     
     if (!date) {
-        showToast('voiceResult', 'Please select a date', true);
+        showToast('ingestResult', 'Please select a date', true);
         return;
     }
     
     if (!isAllDay && (!startTime || !endTime)) {
-        showToast('voiceResult', 'Please enter start and end times', true);
+        showToast('ingestResult', 'Please enter start and end times', true);
         return;
     }
     
     if (!isAllDay && startTime >= endTime) {
-        showToast('voiceResult', 'End time must be after start time', true);
+        showToast('ingestResult', 'End time must be after start time', true);
         return;
     }
     
@@ -2839,12 +2583,12 @@ async function submitManualEvent() {
             const endUtc = zonedDateTimeToUtc(date, endTime, eventTimeZone);
 
             if (!startUtc || !endUtc) {
-                showToast('voiceResult', 'Unable to interpret the selected time. Please double-check your entries.', true);
+                showToast('ingestResult', 'Unable to interpret the selected time. Please double-check your entries.', true);
                 return;
             }
 
             if (startUtc >= endUtc) {
-                showToast('voiceResult', 'End time must be after start time for the selected timezone.', true);
+                showToast('ingestResult', 'End time must be after start time for the selected timezone.', true);
                 return;
             }
 
@@ -2869,12 +2613,12 @@ async function submitManualEvent() {
             }
 
             if (untilType === 'date' && !untilDateValue) {
-                showToast('voiceResult', 'Please select a date to end the recurrence.', true);
+                showToast('ingestResult', 'Please select a date to end the recurrence.', true);
                 return;
             }
 
             if (untilType === 'end_of_semester' && !academicCalendarPresets.termEndDate) {
-                showToast('voiceResult', 'Term end date is not configured. Choose a specific date instead.', true);
+                showToast('ingestResult', 'Term end date is not configured. Choose a specific date instead.', true);
                 return;
             }
 
@@ -2928,7 +2672,7 @@ async function submitManualEvent() {
         }
     } catch (error) {
         console.error('Failed to create event:', error);
-        showToast('voiceResult', `Failed to create event: ${error.message}`, true);
+        showToast('ingestResult', `Failed to create event: ${error.message}`, true);
     }
 }
 
